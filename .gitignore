@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# C++ Build
+build/
+*.o
+*.a
+*.dylib
+cmake-build-*/
+xmake-build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# SyncThings
+.stfolder/
+.stignore
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Logs
+*.log
+
+# Third party dependencies (use git submodules instead)
+InfiniCore/third_party/
+
+# Models & Data (if any)
+*.ckpt
+*.pth
+*.bin
+*.safetensors
+data/
+models/

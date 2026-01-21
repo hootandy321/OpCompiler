@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database
+datasets/*.db
+datasets/*.db-journal
+
+# Uploads (keep directory but ignore uploaded files in git)
+uploads/*
+!uploads/.gitkeep
+
+# Build
+frontend/dist/
+frontend/build/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
