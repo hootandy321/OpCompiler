@@ -1,0 +1,21 @@
+[submodule "benchmarks/computation/InfiniCore"]
+	path = benchmarks/computation/InfiniCore
+	url = git@github.com:InfiniTensor/InfiniCore.git
+[submodule "benchmarks/compatibility/Megatron-LM"]
+	path = benchmarks/compatibility/Megatron-LM
+	url = git@github.com:NVIDIA/Megatron-LM.git
+[submodule "benchmarks/compatibility/nccl-tests"]
+	path = benchmarks/compatibility/nccl-tests
+	url = git@github.com:spike-zhu/nccl-tests.git
+[submodule "benchmarks/compatibility/cuda-samples"]
+	path = benchmarks/compatibility/cuda-samples
+	url = git@github.com:spike-zhu/cuda-samples.git
+[submodule "benchmarks/compatibility/InfiniTensor"]
+	path = benchmarks/compatibility/InfiniTensor
+	url = git@github.com:InfiniTensor/InfiniTensor.git
+[submodule "benchmarks/llm/InfiniLM-Rust"]
+	path = benchmarks/llm/InfiniLM-Rust
+	url = git@github.com:InfiniTensor/InfiniLM-Rust.git
+[submodule "benchmarks/llm/InfiniLM"]
+	path = benchmarks/llm/InfiniLM
+	url = git@github.com:InfiniTensor/InfiniLM.git

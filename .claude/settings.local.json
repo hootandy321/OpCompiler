@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Read(//home/qy/.claude/plugins/**)",
+      "Bash(python -m pytest:*)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(source:*)",
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git reset:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

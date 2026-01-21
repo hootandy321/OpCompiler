@@ -1,0 +1,39 @@
+{
+    files = {
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/devices/cpu/cpu_handle.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/devices/cpu/common_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/gemm/cpu/gemm_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/relu/cpu/relu_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/topksoftmax/cpu/topksoftmax_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/gelu/cpu/gelu_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/rms_norm/cpu/rms_norm_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/silu/cpu/silu_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/softplus/cpu/softplus_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/logsoftmax/cpu/logsoftmax_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/tanh/cpu/tanh_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/causal_softmax/cpu/causal_softmax_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/add_rms_norm/cpu/add_rms_norm_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/clip/cpu/clip_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/rope/cpu/rope_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/add/cpu/add_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/sub/cpu/sub_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/topkrouter/cpu/topkrouter_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/conv/cpu/conv_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/random_sample/cpu/random_sample_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/mul/cpu/mul_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/swiglu/cpu/swiglu_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/ones/cpu/ones_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/layer_norm/cpu/layer_norm_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/sigmoid/cpu/sigmoid_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/rearrange/cpu/rearrange_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/ops/zeros/cpu/zeros_cpu.cc.o",
+        "build/.objs/infiniop-cpu/linux/x86_64/release/src/infiniop/reduce/cpu/reduce.cc.o",
+        "build/linux/x86_64/release/libinfini-utils.a"
+    },
+    values = {
+        "/usr/bin/ar",
+        {
+            "-cr"
+        }
+    }
+}

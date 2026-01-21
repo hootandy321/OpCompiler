@@ -1,0 +1,40 @@
+{
+    values = {
+        "/usr/bin/g++",
+        {
+            "-shared",
+            "-m64",
+            "-fPIC",
+            "-L/home/qy/.infini/lib",
+            "-L/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib",
+            "-L/usr/lib/x86_64-linux-gnu",
+            "-Lbuild/linux/x86_64/release",
+            "-s",
+            "-lboost_stacktrace_noop",
+            "-lboost_stacktrace_backtrace",
+            "-lboost_stacktrace_addr2line",
+            "-lboost_stacktrace_basic",
+            "-lboost_filesystem",
+            "-lboost_atomic",
+            "-lpython3.13",
+            "-lssl",
+            "-lcrypto",
+            "-linfinicore_cpp_api",
+            "-linfiniop",
+            "-linfiniop-cpu",
+            "-linfiniccl",
+            "-linfinirt",
+            "-linfinirt-cpu",
+            "-linfini-utils",
+            "-lpthread",
+            "-ldl",
+            "-fopenmp"
+        }
+    },
+    files = {
+        "build/.objs/_infinicore/linux/x86_64/release/src/infinicore/pybind11/infinicore.cc.o",
+        "build/linux/x86_64/release/libinfini-utils.a",
+        "build/linux/x86_64/release/libinfinirt-cpu.a",
+        "build/linux/x86_64/release/libinfiniop-cpu.a"
+    }
+}

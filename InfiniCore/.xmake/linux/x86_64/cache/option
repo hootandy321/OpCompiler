@@ -1,0 +1,44 @@
+{
+    cudnn = {
+        __sourceinfo_default = { },
+        __sourceinfo_showmenu = { },
+        showmenu = true,
+        default = true,
+        __scriptdir = "/home/qy/src/Infini/InfiniCore",
+        __sourceinfo_description = {
+            ["Whether to compile cudnn for Nvidia GPU"] = {
+                file = "./xmake.lua",
+                line = 62
+            }
+        },
+        description = "Whether to compile cudnn for Nvidia GPU"
+    },
+    cpu = {
+        __sourceinfo_default = { },
+        __sourceinfo_showmenu = { },
+        showmenu = true,
+        default = true,
+        __scriptdir = "/home/qy/src/Infini/InfiniCore",
+        __sourceinfo_description = {
+            ["Whether to compile implementations for CPU"] = {
+                file = "./xmake.lua",
+                line = 29
+            }
+        },
+        description = "Whether to compile implementations for CPU"
+    },
+    omp = {
+        __sourceinfo_default = { },
+        __sourceinfo_showmenu = { },
+        showmenu = true,
+        default = true,
+        __scriptdir = "/home/qy/src/Infini/InfiniCore",
+        __sourceinfo_description = {
+            ["Enable or disable OpenMP support for cpu kernel"] = {
+                file = "./xmake.lua",
+                line = 35
+            }
+        },
+        description = "Enable or disable OpenMP support for cpu kernel"
+    }
+}

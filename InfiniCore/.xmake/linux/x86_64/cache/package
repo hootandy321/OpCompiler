@@ -1,0 +1,89 @@
+{
+    openmp = {
+        fcflags = "-fopenmp",
+        cflags = "-fopenmp",
+        cxxflags = "-fopenmp",
+        __enabled = true,
+        installdir = "/home/qy/.xmake/packages/o/openmp/latest/1317af4e5e2d4a6dbd57a45d3554b167",
+        fcldflags = "-fopenmp",
+        shflags = "-fopenmp",
+        ldflags = "-fopenmp",
+        fcshflags = "-fopenmp",
+        cuflags = "-Xcompiler -fopenmp",
+        __requirestr = "openmp"
+    },
+    pybind11 = {
+        libfiles = {
+            "/usr/lib/x86_64-linux-gnu/libssl.a",
+            "/usr/lib/x86_64-linux-gnu/libcrypto.a"
+        },
+        linkdirs = "/usr/lib/x86_64-linux-gnu",
+        __enabled = true,
+        installdir = "/home/qy/.xmake/packages/p/pybind11/v3.0.1/8f5d512d4fdb4713bf705395b25be885",
+        __requirestr = "pybind11",
+        links = {
+            "python3.13",
+            "ssl",
+            "crypto"
+        },
+        envs = {
+            PATH = {
+                "/home/qy/.xmake/packages/n/ninja/v1.13.1/e7cc4735aeb048e6870171a23c4ee800/bin",
+                "/home/qy/.xmake/packages/c/cmake/4.0.3/b686e3b7911246e2bfa1b52ae27762fe/bin",
+                "/home/qy/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/bin",
+                "/home/qy/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/Scripts"
+            },
+            PYTHONPATH = {
+                "/home/qy/.xmake/packages/p/python/3.13.2/7dbc4c2192884093912e9407517d19cf/lib/python3.13/site-packages"
+            }
+        },
+        sysincludedirs = {
+            "/home/qy/.xmake/packages/p/pybind11/v3.0.1/8f5d512d4fdb4713bf705395b25be885/include",
+            "/usr/include/python3.13"
+        },
+        version = "v3.0.1",
+        license = "BSD-3-Clause"
+    },
+    boost = {
+        __requirestr = "boost",
+        syslinks = {
+            "pthread",
+            "dl"
+        },
+        libfiles = {
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_stacktrace_noop.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_stacktrace_backtrace.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_stacktrace_addr2line.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_stacktrace_basic.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_filesystem.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_atomic.a",
+            "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib/libboost_stacktrace_from_exception.a"
+        },
+        linkdirs = "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/lib",
+        __requireconfs = {
+            configs = {
+                stacktrace = true
+            }
+        },
+        __enabled = true,
+        installdir = "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7",
+        license = "BSL-1.0",
+        static = true,
+        envs = {
+            PATH = {
+                "/home/qy/.xmake/packages/n/ninja/v1.13.1/e7cc4735aeb048e6870171a23c4ee800/bin",
+                "/home/qy/.xmake/packages/c/cmake/4.0.3/b686e3b7911246e2bfa1b52ae27762fe/bin"
+            }
+        },
+        sysincludedirs = "/home/qy/.xmake/packages/b/boost/1.88.0/5b0db275a33941ed88f5b13ad56a9dc7/include",
+        links = {
+            "boost_stacktrace_noop",
+            "boost_stacktrace_backtrace",
+            "boost_stacktrace_addr2line",
+            "boost_stacktrace_basic",
+            "boost_filesystem",
+            "boost_atomic"
+        },
+        version = "1.88.0"
+    }
+}
