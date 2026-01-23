@@ -77,6 +77,17 @@ def _detect_producer_consumer(input_node, other_node):
     return info
 
 
+def _fuse_nodes(nodes):
+        if len(nodes) == 1:
+            return (Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs),)
+
+        fused = functools.reduce(_fuse_node_pair, nodes)
+
+        if fused is None:
+            return nodes
+
+        return (fused,)
+
 def fuser(graph_module, _example_inputs):
     graph = graph_module.graph
 
@@ -96,18 +107,7 @@ def fuser(graph_module, _example_inputs):
             if arg in past_args:
                 return False
 
-        return True
-
-    def _fuse_nodes(nodes):
-        if len(nodes) == 1:
-            return (Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs),)
-
-        fused = functools.reduce(_fuse_node_pair, nodes)
-
-        if fused is None:
-            return nodes
-
-        return (fused,)
+        return True 
 
     for node in graph.nodes:
         if isinstance(node.target, ninetoothed.jit.__globals__["_Handle"]):
