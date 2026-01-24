@@ -318,6 +318,15 @@ Infini/
 
 ## 💻 快速开始
 
+### 配置环境
+
+```bash
+cd InifiCore
+pip install -e .
+cd ntops
+pip install -e .
+```
+
 ### 运行单元测试
 
 ```bash

@@ -1,6 +1,7 @@
 import functools
 import inspect
 import itertools
+import ast
 
 import ninetoothed.jit
 import ninetoothed.naming as naming
@@ -26,17 +27,66 @@ class Node:
         self.kwargs = kwargs
 
 
+class ProducerConsumerInfo:
+    """Information about producer-consumer relationships between kernels."""
+
+    def __init__(self):
+        # Maps intermediate tensor position in input_kernel.args to output position
+        self.intermediate_tensors = {}
+        # Position of producer's output tensor in its args
+        self.producer_output_positions = []
+        # Position of consumer's input tensor in its args that receives producer output
+        self.consumer_input_positions = []
+
+    def has_intermediates(self):
+        return len(self.intermediate_tensors) > 0
+
+
+def _detect_producer_consumer(input_node, other_node):
+    """Detect producer-consumer relationships between two kernel nodes.
+
+    Returns ProducerConsumerInfo identifying which output tensors from
+    input_node are consumed as inputs by other_node.
+    """
+    info = ProducerConsumerInfo()
+
+    input_kernel = input_node.kernel
+    other_kernel = other_node.kernel
+
+    # Get the number of input and output tensors for each kernel
+    # Convention: last tensor in args is typically the output
+    input_num_params = len(inspect.signature(input_kernel.application).parameters)
+    other_num_params = len(inspect.signature(other_kernel.application).parameters)
+
+    # Assume last parameter is output for simple elementwise operations
+    input_output_pos = input_num_params - 1
+    other_input_positions = list(range(other_num_params - 1))
+
+    # Check if input_kernel's output tensor is used as input to other_kernel
+    if len(input_node.args) > input_output_pos:
+        input_output_tensor = input_node.args[input_output_pos]
+
+        for other_pos in other_input_positions:
+            if other_pos < len(other_node.args):
+                other_input_tensor = other_node.args[other_pos]
+                if input_output_tensor is other_input_tensor:
+                    info.intermediate_tensors[input_output_pos] = other_pos
+                    info.producer_output_positions.append(input_output_pos)
+                    info.consumer_input_positions.append(other_pos)
+
+    return info
+
+
 def _fuse_nodes(nodes):
-    if len(nodes) == 1:
-        return (Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs),)
+        if len(nodes) == 1:
+            return (Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs),)
 
-    fused = functools.reduce(_fuse_node_pair, nodes)
+        fused = functools.reduce(_fuse_node_pair, nodes)
 
-    if fused is None:
-        return nodes
+        if fused is None:
+            return nodes
 
-    return (fused,)
-
+        return (fused,)
 
 def fuser(graph_module, _example_inputs):
     graph = graph_module.graph
@@ -57,7 +107,7 @@ def fuser(graph_module, _example_inputs):
             if arg in past_args:
                 return False
 
-        return True
+        return True 
 
     for node in graph.nodes:
         if isinstance(node.target, ninetoothed.jit.__globals__["_Handle"]):
@@ -89,7 +139,8 @@ def fuser(graph_module, _example_inputs):
 
 
 class _FusionInfo:
-    def __init__(self, input_prefix, input_suffix, other_prefix, other_suffix):
+    def __init__(self, input_prefix, input_suffix, other_prefix, other_suffix,
+                 producer_consumer_info=None):
         self.input_prefix = input_prefix
 
         self.input_suffix = input_suffix
@@ -97,6 +148,8 @@ class _FusionInfo:
         self.other_prefix = other_prefix
 
         self.other_suffix = other_suffix
+
+        self.producer_consumer_info = producer_consumer_info or ProducerConsumerInfo()
 
 
 def _fuse_node_pair(input_node, other_node):
@@ -106,6 +159,9 @@ def _fuse_node_pair(input_node, other_node):
     input_kernel = input_node.kernel
     other_kernel = other_node.kernel
 
+    # Detect producer-consumer relationships
+    pc_info = _detect_producer_consumer(input_node, other_node)
+
     mapping = {}
 
     for other_position, arg in enumerate(other_node.args):
@@ -114,11 +170,13 @@ def _fuse_node_pair(input_node, other_node):
 
         mapping[other_position] = input_node.args.index(arg)
 
-    fused_kernel = _fuse_kernel_pair(input_kernel, other_kernel, mapping)
+    fused_kernel = _fuse_kernel_pair(input_kernel, other_kernel, mapping, pc_info)
 
     if fused_kernel is None:
         return None
 
+    # Keep all tensors in fused_args for compatibility with arrangement
+    # The application fusion will optimize the actual computation
     fused_args = input_node.args + other_node.args
     fused_kwargs = input_node.kwargs | other_node.kwargs
 
@@ -127,9 +185,12 @@ def _fuse_node_pair(input_node, other_node):
     return fused_node
 
 
-def _fuse_kernel_pair(input_kernel, other_kernel, mapping):
+def _fuse_kernel_pair(input_kernel, other_kernel, mapping, pc_info=None):
+    if pc_info is None:
+        pc_info = ProducerConsumerInfo()
+
     arrangement, tensors, fusion_info = _fuse_arrangement_pair(
-        input_kernel, other_kernel, mapping
+        input_kernel, other_kernel, mapping, pc_info
     )
 
     if arrangement is None:
@@ -183,7 +244,10 @@ def _fuse_kernel_pair(input_kernel, other_kernel, mapping):
     )
 
 
-def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
+def _fuse_arrangement_pair(input_kernel, other_kernel, mapping, pc_info=None):
+    if pc_info is None:
+        pc_info = ProducerConsumerInfo()
+
     input_arrangement = input_kernel.arrangement
     other_arrangement = other_kernel.arrangement
 
@@ -231,7 +295,7 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
                 if not (
                     Symbol.is_name(block_size) and naming.is_meta(block_size.node.id)
                 ):
-                    return None, None, None
+                    return None, None
 
             new_lower_bound = max(
                 input_block_size.lower_bound, other_block_size.lower_bound
@@ -253,10 +317,11 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     fusion_info = _get_fusion_info(
         input_tensors_arranged[input_tensor_positions[0]],
         other_tensors_arranged[other_tensor_positions[0]],
+        pc_info,
     )
 
     if fusion_info is None:
-        return None, None, None
+        return None, None
 
     input_prefix = fusion_info.input_prefix
     input_suffix = fusion_info.input_suffix
@@ -266,15 +331,10 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     for input_tensor_position, other_tensor_position in zip(
         input_tensor_positions[1:], other_tensor_positions[1:]
     ):
-        fusion_info_ = _get_fusion_prefix_and_suffix(
+        (input_prefix_, input_suffix_), (other_prefix_, other_suffix_) = _get_fusion_prefix_and_suffix(
             input_tensors_arranged[input_tensor_position],
             other_tensors_arranged[other_tensor_position],
         )
-
-        input_prefix_ = fusion_info_.input_prefix
-        input_suffix_ = fusion_info_.input_suffix
-        other_prefix_ = fusion_info_.other_prefix
-        other_suffix_ = fusion_info_.other_suffix
 
         if (
             input_prefix_ != input_prefix
@@ -368,9 +428,210 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
 
 
 def _fuse_application_pair(input_kernel, other_kernel, fusion_info):
+    """Fuse two application functions into one.
+
+    If producer-consumer relationship exists (output of first kernel is input to second),
+    generates truly fused code that eliminates intermediate memory access.
+    """
+    pc_info = fusion_info.producer_consumer_info
+
+    # Check if we can do true vertical fusion (eliminate intermediate)
+    if pc_info.has_intermediates():
+        fused_app = _generate_vertically_fused_application(
+            input_kernel, other_kernel, fusion_info, pc_info
+        )
+        if fused_app is not None:
+            return fused_app
+
+    # Fall back to horizontal fusion (sequential invocation)
+    return _generate_horizontally_fused_application(
+        input_kernel, other_kernel, fusion_info
+    )
+
+
+def _generate_vertically_fused_application(input_kernel, other_kernel, fusion_info, pc_info):
+    """Generate a truly fused application that eliminates intermediate memory access.
+
+    This analyzes the source of both application functions and combines them
+    so that the producer's output expression directly substitutes into the
+    consumer's input, keeping intermediate values in registers.
+
+    The function maintains the same parameter signature as horizontal fusion
+    for compatibility with the arrangement/tensor system.
+    """
+    try:
+        input_app = input_kernel.application
+        other_app = other_kernel.application
+
+        # Get source code and parse AST for both applications
+        input_source = inspect.getsource(input_app)
+        other_source = inspect.getsource(other_app)
+
+        input_tree = ast.parse(input_source)
+        other_tree = ast.parse(other_source)
+
+        # Extract the assignment expressions from each application
+        input_func_def = input_tree.body[0]
+        other_func_def = other_tree.body[0]
+
+        input_params = [arg.arg for arg in input_func_def.args.args]
+        other_params = [arg.arg for arg in other_func_def.args.args]
+
+        # Find the output assignment in input kernel (typically last param = expr)
+        input_output_expr = None
+        input_output_param = input_params[-1] if input_params else None
+
+        for stmt in input_func_def.body:
+            if isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name) and target.id == input_output_param:
+                        input_output_expr = stmt.value
+                        break
+
+        if input_output_expr is None:
+            return None
+
+        # Find which consumer input corresponds to producer output
+        consumer_input_pos = pc_info.consumer_input_positions[0] if pc_info.consumer_input_positions else None
+        if consumer_input_pos is None or consumer_input_pos >= len(other_params):
+            return None
+
+        consumer_intermediate_param = other_params[consumer_input_pos]
+
+        # Generate parameter names for the fused function
+        # Keep ALL parameters for compatibility with arrangement
+        count = [0]
+
+        def make_param():
+            param = naming.auto_generate(f"parameter_{count[0]}")
+            count[0] += 1
+            return param
+
+        # Build parameter mapping for input kernel (ALL params including output)
+        input_param_mapping = {}
+        fused_params = []
+        for param in input_params:
+            new_param = make_param()
+            input_param_mapping[param] = new_param
+            fused_params.append(new_param)
+
+        # Build parameter mapping for other kernel (ALL params)
+        other_param_mapping = {}
+        for param in other_params:
+            new_param = make_param()
+            other_param_mapping[param] = new_param
+            fused_params.append(new_param)
+
+        # Rename variables in the input expression (using input params except output)
+        class VarRenamer(ast.NodeTransformer):
+            def __init__(self, mapping):
+                self.mapping = mapping
+
+            def visit_Name(self, node):
+                if node.id in self.mapping:
+                    return ast.Name(id=self.mapping[node.id], ctx=node.ctx)
+                return node
+
+        # Create a copy for substitution (don't include output param mapping)
+        input_expr_mapping = {k: v for k, v in input_param_mapping.items() if k != input_output_param}
+        renamed_input_expr = VarRenamer(input_expr_mapping).visit(
+            ast.parse(ast.unparse(input_output_expr), mode='eval').body
+        )
+
+        # Find the output assignment in other kernel
+        other_output_param = other_params[-1] if other_params else None
+        other_output_expr = None
+
+        for stmt in other_func_def.body:
+            if isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name) and target.id == other_output_param:
+                        other_output_expr = stmt.value
+                        break
+
+        if other_output_expr is None:
+            return None
+
+        # Substitute the intermediate parameter with the input expression
+        class IntermediateSubstituter(ast.NodeTransformer):
+            def __init__(self, intermediate_name, replacement_expr, var_mapping):
+                self.intermediate_name = intermediate_name
+                self.replacement_expr = replacement_expr
+                self.var_mapping = var_mapping
+
+            def visit_Name(self, node):
+                if node.id == self.intermediate_name:
+                    # Return a copy of the replacement expression
+                    import copy
+                    return copy.deepcopy(self.replacement_expr)
+                if node.id in self.var_mapping:
+                    return ast.Name(id=self.var_mapping[node.id], ctx=node.ctx)
+                return node
+
+        # Exclude intermediate param from mapping since it will be substituted
+        other_expr_mapping = {k: v for k, v in other_param_mapping.items() 
+                             if k != consumer_intermediate_param}
+        
+        fused_output_expr = IntermediateSubstituter(
+            consumer_intermediate_param,
+            renamed_input_expr,
+            other_expr_mapping
+        ).visit(ast.parse(ast.unparse(other_output_expr), mode='eval').body)
+
+        # Get the output parameter name for the fused function
+        fused_output_param = other_param_mapping[other_output_param]
+
+        # Generate the fused application source
+        fused_expr_str = ast.unparse(fused_output_expr)
+        param_names = ", ".join(fused_params)
+
+        _APPLICATION_NAME = "application"
+
+        # Import any modules needed
+        input_module = inspect.getmodule(input_app)
+        other_module = inspect.getmodule(other_app)
+
+        imports = set()
+        if input_module and input_module.__name__ != "__main__":
+            imports.add(f"import {input_module.__name__}")
+        if other_module and other_module.__name__ != "__main__":
+            imports.add(f"import {other_module.__name__}")
+
+        # Check if ninetoothed.language is used
+        if "ntl." in fused_expr_str or "ninetoothed.language" in fused_expr_str:
+            imports.add("import ninetoothed.language as ntl")
+
+        imports_str = "\n".join(sorted(imports)) if imports else ""
+
+        # Generate the fused application
+        # Note: We keep all parameters for compatibility, but only use what's needed
+        application_source = f"""{imports_str}
+
+def {_APPLICATION_NAME}({param_names}):
+    # Vertically fused: intermediate value computed inline
+    {fused_output_param} = {fused_expr_str}  # noqa: F841
+"""
+
+        source_file = cache_source(application_source)
+        module = import_from_path(source_file.stem, source_file)
+        module_vars = vars(module)
+
+        return module_vars[_APPLICATION_NAME]
+
+    except Exception:
+        # If vertical fusion fails, return None to fall back to horizontal
+        return None
+
+
+def _generate_horizontally_fused_application(input_kernel, other_kernel, fusion_info):
+    """Generate horizontally fused application (sequential invocation).
+
+    This is the fallback when vertical fusion is not possible.
+    """
     count = 0
 
     def _generate_invocation_info(application, prefix, suffix, indent=4):
+        nonlocal count
         indentation = " " * indent
 
         def _make_param():
@@ -479,7 +740,8 @@ def {_APPLICATION_NAME}({param_names}):
     return application
 
 
-def _get_fusion_info(input, other):
+
+def _get_fusion_info(input, other, pc_info=None):
     (input_prefix, input_suffix), (other_prefix, other_suffix) = (
         _get_fusion_prefix_and_suffix(input, other)
     )
@@ -487,7 +749,7 @@ def _get_fusion_info(input, other):
     if input_prefix is None:
         return None
 
-    return _FusionInfo(input_prefix, input_suffix, other_prefix, other_suffix)
+    return _FusionInfo(input_prefix, input_suffix, other_prefix, other_suffix, pc_info)
 
 
 def _get_fusion_prefix_and_suffix(input, other):

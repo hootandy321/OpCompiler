@@ -157,7 +157,7 @@ class TestFallbackExecution:
         from infinicore.fusion import FusionScheduler, FusionConfig, SubGraph, OpNode
         
         # 禁用融合，强制走回退路径
-        config = FusionConfig(enable_fusion=False)
+        config = FusionConfig(enable_fusion=False, debug_mode=True)
         scheduler = FusionScheduler(config)
         
         graph = SubGraph(

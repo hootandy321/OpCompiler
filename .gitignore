@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-*.egg-info/
+*.egg-info
 dist/
 build/
 .pytest_cache/
@@ -26,7 +26,7 @@ xmake-build/
 *.swo
 
 # macOS
-.DS_Store
+*.DS_Store
 .AppleDouble
 .LSOverride
 
@@ -52,3 +52,8 @@ InfiniCore/third_party/
 *.safetensors
 data/
 models/
+.pytest_cache/
+.xmake/
+
+# Sync conflict files (Syncthing, cloud IDE sync)
+*.sync-conflict-*

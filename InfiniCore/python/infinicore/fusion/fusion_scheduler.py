@@ -58,6 +58,8 @@ class FusionScheduler:
                 "silu": F.silu,
                 "gelu": F.gelu,
                 "relu": F.relu,
+                                    
+
             })
             if hasattr(F, 'rms_norm'):
                 self._op_registry["rms_norm"] = F.rms_norm
@@ -124,6 +126,8 @@ class FusionScheduler:
         
         # 检查是否应该尝试融合
         if not self._heuristics.should_fuse(graph, input_shapes):
+            if self.config.debug_mode:
+                print(f"[FusionScheduler] Skipping fusion for {graph.cache_key(input_dtypes, input_shapes)}")
             return self._fallback_execute(graph, inputs)
         
         # 检查缓存

@@ -14,7 +14,7 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
-from ninetoothed.fusion import fuser
+from ninetoothed.fusion import fuser, _fuse_nodes
 from ninetoothed.jit import jit
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
@@ -35,6 +35,7 @@ __all__ = [
     "eval",
     "subs",
     "fuser",
+    "_fuse_nodes",
     "jit",
     "make",
     "uint8",
