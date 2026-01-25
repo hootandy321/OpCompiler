@@ -11,6 +11,12 @@ from infinicore.fusion.subgraph import OpNode, SubGraph
 from infinicore.fusion.fusion_config import FusionConfig
 from infinicore.fusion.heuristics import FusionHeuristics
 from infinicore.fusion.fusion_scheduler import FusionScheduler
+from infinicore.fusion.graph_converter import (
+    convert_graph_to_subgraph,
+    match_fusion_pattern,
+    find_fusable_subgraphs,
+    GraphOpInfo,
+)
 
 __all__ = [
     "OpNode",
@@ -18,4 +24,8 @@ __all__ = [
     "FusionConfig",
     "FusionHeuristics",
     "FusionScheduler",
+    "convert_graph_to_subgraph",
+    "match_fusion_pattern",
+    "find_fusable_subgraphs",
+    "GraphOpInfo",
 ]
