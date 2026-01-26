@@ -5,8 +5,8 @@
 融合并不总是带来性能提升，特别是对于小 Shape 或编译开销较大的场景。
 """
 
-from typing import Dict, Tuple, Set
-
+from typing import Any, Dict, Optional, Tuple, Set
+import os,json
 from infinicore.fusion.subgraph import SubGraph
 from infinicore.fusion.fusion_config import FusionConfig
 
@@ -48,13 +48,59 @@ class FusionHeuristics:
     def __init__(self, config: FusionConfig):
         self.config = config
         self._supported_ops = None  # 延迟初始化
-    
+        self.profile_path = ".\profile_result.json"
+        self._profile_cache: Optional[Dict[str, Any]] = None  # 缓存profile
+        
     def _get_ops(self) -> Set[str]:
         """获取支持的算子集合（带缓存）"""
         if self._supported_ops is None:
             self._supported_ops = _get_supported_ops()
         return self._supported_ops
     
+    def _load_profile(self) -> Dict[str, Dict[str, float]]:
+        """
+        从 JSON 文件加载 profile（不依赖 FusionConfig）
+
+        Returns:
+            {
+            "single": {op_type: time},
+            "fused": {fused_key: time}
+            }
+        """
+        if self.profile_path is None:
+            return {"single": {}, "fused": {}}
+
+        if not isinstance(self.profile_path, str):
+            raise TypeError(f"profile_path must be str or None, got {type(self.profile_path)}")
+
+        if not os.path.exists(self.profile_path):
+            raise FileNotFoundError(f"Profile json not found: {self.profile_path}")
+
+        with open(self.profile_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # ---- 归一化结构 ----
+        if "single" in data or "fused" in data:
+            single = data.get("single", {}) or {}
+            fused = data.get("fused", {}) or {}
+            return {
+                "single": {k: float(v) for k, v in single.items()},
+                "fused": {k: float(v) for k, v in fused.items()},
+            }
+
+        # ---- 兼容扁平结构 ----
+        single: Dict[str, float] = {}
+        fused: Dict[str, float] = {}
+        for k, v in data.items():
+            if not isinstance(v, (int, float)):
+                continue
+            if k.startswith("single:"):
+                single[k[len("single:"):]] = float(v)
+            elif k.startswith("fused:"):
+                fused[k[len("fused:"):]] = float(v)
+
+        return {"single": single, "fused": fused}
+
     def should_fuse(
         self,
         graph: SubGraph,
@@ -107,7 +153,71 @@ class FusionHeuristics:
         if self.config.debug_mode:
             print(f"[Fusion] Accept: graph with {len(graph.nodes)} nodes")
         
-        return True
+        # --------------------  基于 profile 决策是否融合 --------------------
+
+        input_dtypes = getattr(self.config, "input_dtypes", None)
+        if input_dtypes is None:# 临时兜底：全部当 fp16
+            input_dtypes = {name: "fp16" for name in input_shapes}
+
+        profile = self._load_profile()
+        single_t = profile.get("single", {}) or {} # 单个算子独立 kernel 的执行时间
+
+        fused_t = profile.get("fused", {}) or {}
+
+        supported = self._get_ops()
+        op_types = [n.op_type for n in graph.nodes]
+        if any(op not in supported for op in op_types):
+            if self.config.debug_mode:
+                print("[Fusion] Skip profile check: contains unsupported ops unexpectedly")
+            return False
+
+        # 计算单算子总时间
+        missing_single = [op for op in op_types if op not in single_t]
+        if missing_single:
+            fallback = getattr(self.config, "profile_fallback", "fuse")  # "fuse" / "no_fuse"
+            if self.config.debug_mode:
+                print(f"[Fusion] Profile missing single timings for {missing_single}, fallback={fallback}")
+            return True if fallback == "fuse" else False
+       
+        # 多个单算子 kernel 时间之和
+        separate_time = sum(float(single_t[op]) for op in op_types) 
+
+        # 生成融合 key：优先用 cache_key（包含图结构 + dtype + shape），避免 profile 冲突
+        fused_key_primary = graph.cache_key(input_dtypes=input_dtypes, input_shapes=input_shapes)
+
+        # 兼容旧 profile：op 串联 key
+        fused_key_ops = "+".join(op_types)
+
+        # 依次尝试查融合时间
+        fused_time = None
+        for k in (fused_key_primary, fused_key_ops):
+            if k in fused_t:
+                fused_time = fused_t[k]
+                fused_key_used = k
+                break
+
+        if fused_time is None:
+            fallback = getattr(self.config, "profile_fallback", "fuse")
+            if self.config.debug_mode:
+                print(f"[Fusion] Profile missing fused timing for key='{fused_key_primary}' / '{fused_key_ops}', fallback={fallback}")
+            return True if fallback == "fuse" else False
+
+        fused_time = float(fused_time) # 整个子图融合后，一个 kernel 的执行时间
+
+        margin = float(getattr(self.config, "profile_margin", 0.0))
+        decision = separate_time > fused_time * (1.0 + margin)
+
+        if self.config.debug_mode:
+            print(
+                f"[Fusion] Profile decision: separate={separate_time:.6f} ms, "
+                f"fused={fused_time:.6f} ms, margin={margin:.3f} => "
+                f"{'FUSE' if decision else 'NO_FUSE'} (key='{fused_key_used}')"
+            )
+
+        return decision
+       
+
+
     
     def get_supported_ops(self) -> Set[str]:
         """返回当前支持融合的算子类型集合"""
