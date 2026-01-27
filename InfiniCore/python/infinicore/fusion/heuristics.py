@@ -155,52 +155,33 @@ class FusionHeuristics:
         
         # --------------------  基于 profile 决策是否融合 --------------------
 
-        input_dtypes = getattr(self.config, "input_dtypes", None)
-        if input_dtypes is None:# 临时兜底：全部当 fp16
-            input_dtypes = {name: "fp16" for name in input_shapes}
-
         profile = self._load_profile()
         single_t = profile.get("single", {}) or {} # 单个算子独立 kernel 的执行时间
-
         fused_t = profile.get("fused", {}) or {}
-
-        supported = self._get_ops()
         op_types = [n.op_type for n in graph.nodes]
-        if any(op not in supported for op in op_types):
-            if self.config.debug_mode:
-                print("[Fusion] Skip profile check: contains unsupported ops unexpectedly")
-            return False
 
         # 计算单算子总时间
         missing_single = [op for op in op_types if op not in single_t]
         if missing_single:
-            fallback = getattr(self.config, "profile_fallback", "fuse")  # "fuse" / "no_fuse"
-            if self.config.debug_mode:
-                print(f"[Fusion] Profile missing single timings for {missing_single}, fallback={fallback}")
-            return True if fallback == "fuse" else False
-       
+            print(f"[Fusion] Profile missing single timings for {missing_single}")
+            return True
+        
         # 多个单算子 kernel 时间之和
         separate_time = sum(float(single_t[op]) for op in op_types) 
-
-        # 生成融合 key：优先用 cache_key（包含图结构 + dtype + shape），避免 profile 冲突
-        fused_key_primary = graph.cache_key(input_dtypes=input_dtypes, input_shapes=input_shapes)
 
         # 兼容旧 profile：op 串联 key
         fused_key_ops = "+".join(op_types)
 
         # 依次尝试查融合时间
         fused_time = None
-        for k in (fused_key_primary, fused_key_ops):
-            if k in fused_t:
-                fused_time = fused_t[k]
-                fused_key_used = k
-                break
+    
+        if fused_key_ops in fused_t:
+            fused_time = fused_t[fused_key_ops]
+            fused_key_used = fused_key_ops
+        else:
+            print(f"[Fusion] Profile data missing fused timing for key=''{fused_key_ops}'")
+            return True
 
-        if fused_time is None:
-            fallback = getattr(self.config, "profile_fallback", "fuse")
-            if self.config.debug_mode:
-                print(f"[Fusion] Profile missing fused timing for key='{fused_key_primary}' / '{fused_key_ops}', fallback={fallback}")
-            return True if fallback == "fuse" else False
 
         fused_time = float(fused_time) # 整个子图融合后，一个 kernel 的执行时间
 
