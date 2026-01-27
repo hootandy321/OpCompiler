@@ -26,28 +26,82 @@ def convert_graph_to_subgraph(graph) -> Optional[SubGraph]:
     """
     将 InfiniCore 录制的 Graph 转换为 SubGraph。
     
+    使用 C++ Graph.operators() 接口直接提取算子信息。
+    
     Args:
         graph: infinicore.Graph 对象，从 stop_graph_recording() 获取
         
     Returns:
         SubGraph: 可供 FusionScheduler 处理的子图描述
         None: 如果图为空或无法转换
-        
-    Note:
-        当前实现依赖 Graph 对象暴露的内部结构。
-        如果 Graph 没有暴露算子信息，需要扩展 C++ pybind11 接口。
     """
     if graph is None:
         return None
     
-    # 尝试获取图的内部结构
-    # Graph 类当前只有 run() 方法，我们需要扩展它
+    # 使用新接口：Graph.operators() 返回 GraphOperator 列表
+    if not hasattr(graph, 'operators'):
+        # 旧版本 InfiniCore，使用 fallback 逻辑
+        return _convert_graph_legacy(graph)
+    
+    try:
+        operators = graph.operators()
+    except Exception:
+        return None
+    
+    if not operators or len(operators) == 0:
+        return None
+    
+    nodes = []
+    all_tensor_names = set()
+    
+    for i, op in enumerate(operators):
+        # 获取算子类型（如 "Gemm" -> "gemm"）
+        op_type = op.op_type.lower() if op.op_type else f"op_{i}"
+        
+        # 从 tensor_metas 提取输入输出
+        inputs = []
+        outputs = []
+        
+        for j, meta in enumerate(op.tensor_metas):
+            name = f"t_{i}_{j}"
+            all_tensor_names.add(name)
+            if meta.is_input:
+                inputs.append(name)
+            else:
+                outputs.append(name)
+        
+        # 如果没有捕获到任何张量，使用占位符
+        if not inputs and not outputs:
+            inputs = [f"input_{i}"]
+            outputs = [f"output_{i}"]
+        
+        nodes.append(OpNode(
+            op_type=op_type,
+            inputs=tuple(inputs),
+            outputs=tuple(outputs),
+        ))
+    
+    # 推断子图的外部输入/输出
+    if nodes:
+        graph_inputs = nodes[0].inputs
+        graph_outputs = nodes[-1].outputs
+    else:
+        graph_inputs = ()
+        graph_outputs = ()
+    
+    return SubGraph(
+        nodes=tuple(nodes),
+        input_names=graph_inputs,
+        output_names=graph_outputs,
+    )
+
+
+def _convert_graph_legacy(graph) -> Optional[SubGraph]:
+    """Fallback: 旧版本 Graph 对象的转换逻辑"""
     underlying = getattr(graph, '_graph', None)
     if underlying is None:
         return None
     
-    # 尝试获取算子列表
-    # 注意：这需要 C++ Graph 类暴露节点信息
     ops_info = _extract_ops_from_graph(underlying)
     if not ops_info:
         return None
