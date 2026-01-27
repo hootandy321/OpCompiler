@@ -2,6 +2,7 @@
 
 #include "cache/cache.hpp"
 #include "engine/engine.hpp"
+#include "fusion.hpp"
 #include "models/llama.hpp"
 
 namespace py = pybind11;
@@ -13,4 +14,5 @@ PYBIND11_MODULE(_infinilm, m) {
     infinilm::models::llama::bind_llama(m);
     infinilm::engine::distributed::bind_dist_config(m);
     infinilm::engine::bind_infer_engine(m);
+    infinilm::fusion::bind_fusion(m);
 }
