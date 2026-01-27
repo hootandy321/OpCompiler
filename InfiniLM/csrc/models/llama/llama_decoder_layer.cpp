@@ -1,15 +1,17 @@
 #include "llama_decoder_layer.hpp"
+#include "../../fusion/fusion_context.hpp"
 #include "infinicore/nn/rmsnorm.hpp"
 #include "infinicore/ops.hpp"
 
 #include <optional>
+#include <tuple>
 
 namespace infinilm::models::llama {
 
 LlamaDecoderLayer::LlamaDecoderLayer(const LlamaConfig &config,
                                      const infinicore::Device &device,
                                      size_t layer_idx,
-                                     engine::distributed::RankInfo rank_info) : layer_idx_(layer_idx), rank_info_(rank_info) {
+                                     engine::distributed::RankInfo rank_info) : layer_idx_(layer_idx), rank_info_(rank_info), enable_fusion_(config.enable_fusion) {
     const auto &dtype{config.dtype};
 
     // Initialize layer normalization layers
@@ -40,13 +42,25 @@ infinicore::Tensor LlamaDecoderLayer::forward(const infinicore::Tensor &hidden_s
     // 2. Self-attention with residual connection
     auto attn_output = self_attn_->forward(normed_states, position_ids, kv_cache, past_sequence_lengths, total_sequence_lengths, input_offsets, block_tables, slot_mapping);
 
-    // Add residual: hidden_states = hidden_states + attn_output
-    auto output = infinicore::op::add(residual, attn_output);
+    // 3. Add residual + post-attention layer normalization
+    // Check both static config and dynamic FusionContext
+    bool use_fused_add_rms_norm = enable_fusion_ && fusion::FusionContext::get("add_rms_norm", true);
+
+    infinicore::Tensor output;
+    if (use_fused_add_rms_norm) {
+        // Fused Add + RMSNorm (attention residual connection)
+        std::tie(normed_states, output) = infinicore::op::add_rms_norm(
+            residual,
+            attn_output,
+            post_attention_layernorm_->weight(),
+            post_attention_layernorm_->eps());
+    } else {
+        // Non-fused path: separate add and rms_norm
+        output = infinicore::op::add(residual, attn_output);
+        normed_states = post_attention_layernorm_->forward(output);
+    }
     // Save residual for MLP
     residual = output;
-
-    // 3. Post-attention layer normalization
-    normed_states = post_attention_layernorm_->forward(output);
 
     // 4. MLP with residual connection
     auto mlp_output = mlp_->forward(normed_states);

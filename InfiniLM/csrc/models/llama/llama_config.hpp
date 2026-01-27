@@ -35,8 +35,8 @@ struct LlamaConfig : public InfinilmModel::Config {
     // Position embeddings
     size_t max_position_embeddings = 2048; // Maximum sequence length
     double rope_theta = 10000.0;           // RoPE base frequency
-
-    std::shared_ptr<infinicore::nn::RoPE::ScalingConfig> rope_scaling = nullptr; // RoPE scaling type
+    // TODO: RoPE scaling (YaRN, NTK-aware) not yet implemented in InfiniCore
+    // std::shared_ptr<void> rope_scaling = nullptr; // RoPE scaling type
 
     // Normalization
     double rms_norm_eps = 1e-6; // RMSNorm epsilon
@@ -52,6 +52,9 @@ struct LlamaConfig : public InfinilmModel::Config {
     bool mlp_bias = false;              // Whether to use bias in MLP projections
     bool tie_word_embeddings = false;   // Whether to tie input/output embeddings
     bool qk_norm = false;               // Whether to use QK RMSNorm
+
+    // Fusion settings
+    bool enable_fusion = true; // Whether to use fused kernels (add_rms_norm, swiglu)
 
     // Training/initialization parameters
     double attention_dropout = 0.0;  // Dropout ratio for attention probabilities

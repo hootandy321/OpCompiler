@@ -59,16 +59,8 @@ InfiniCore/third_party/
 *.safetensors
 *.gguf
 data/
-models/
 .pytest_cache/
 
-# JSON (keep config.json, but ignore others)
-*.json
-!config.json
-!generation_config.json
-!tokenizer_config.json
-
-# Text files (keep important configs)
-*.txt
-!requirements.txt
-!README.txt
+# Important: Don't ignore all JSON/TXT files - only specific ones
+# *.json  # Commented out - too broad
+# *.txt   # Commented out - too broad

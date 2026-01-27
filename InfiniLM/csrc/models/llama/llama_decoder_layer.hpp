@@ -77,7 +77,8 @@ protected:
     engine::distributed::RankInfo rank_info_;
 
 private:
-    size_t layer_idx_; // Layer index for cache management and debugging
+    size_t layer_idx_;   // Layer index for cache management and debugging
+    bool enable_fusion_; // Whether to use fused kernels
 };
 
 } // namespace infinilm::models::llama

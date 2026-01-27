@@ -89,6 +89,24 @@ class FusedInferEngine(InferEngine):
             "fusion_decisions": 0,
         }
     
+    def _set_fusion_context(self, decisions: Dict[str, bool]):
+        """设置 C++ FusionContext，传递动态融合决策"""
+        try:
+            from infinilm.lib import _infinilm
+            for op_name, should_fuse in decisions.items():
+                _infinilm.FusionContext.set(op_name, should_fuse)
+        except (ImportError, AttributeError):
+            # FusionContext not available, skip
+            pass
+    
+    def _clear_fusion_context(self):
+        """清理 C++ FusionContext"""
+        try:
+            from infinilm.lib import _infinilm
+            _infinilm.FusionContext.clear()
+        except (ImportError, AttributeError):
+            pass
+    
     def _get_shape_key(self, input_ids: torch.Tensor, pos: torch.Tensor) -> str:
         key_str = f"{input_ids.shape}_{input_ids.dtype}_{pos.shape}_{pos.dtype}"
         return hashlib.md5(key_str.encode()).hexdigest()[:16]
@@ -184,20 +202,27 @@ class FusedInferEngine(InferEngine):
         # 获取这个 shape 的融合决策（基于 profile）
         fusion_decisions = self._get_fusion_decisions(shape_key)
         
-        # 检查 Graph 缓存
-        if shape_key in self._graph_cache:
-            cache_entry = self._graph_cache[shape_key]
-            
-            if cache_entry["iteration_count"] >= self._warmup_iterations:
-                self._stats["cache_hits"] += 1
-                return self._replay_graph(cache_entry, input_ids, pos)
-            else:
-                cache_entry["iteration_count"] += 1
-                self._stats["cache_misses"] += 1
-                return super().forward(input_ids=input_ids, pos=pos, **kwargs)
+        # 设置 C++ FusionContext（动态融合决策）
+        self._set_fusion_context(fusion_decisions)
         
-        self._stats["cache_misses"] += 1
-        return self._record_and_cache(shape_key, input_ids, pos, fusion_decisions, **kwargs)
+        try:
+            # 检查 Graph 缓存
+            if shape_key in self._graph_cache:
+                cache_entry = self._graph_cache[shape_key]
+                
+                if cache_entry["iteration_count"] >= self._warmup_iterations:
+                    self._stats["cache_hits"] += 1
+                    return self._replay_graph(cache_entry, input_ids, pos)
+                else:
+                    cache_entry["iteration_count"] += 1
+                    self._stats["cache_misses"] += 1
+                    return super().forward(input_ids=input_ids, pos=pos, **kwargs)
+            
+            self._stats["cache_misses"] += 1
+            return self._record_and_cache(shape_key, input_ids, pos, fusion_decisions, **kwargs)
+        finally:
+            # 清理 FusionContext
+            self._clear_fusion_context()
     
     def _record_and_cache(
         self,
