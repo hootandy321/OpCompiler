@@ -45,10 +45,11 @@ class FusionHeuristics:
     后续 V2 版本将添加自动采样机制进行实际性能对比。
     """
     
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionConfig, _path: Optional[str] = None):
         self.config = config
         self._supported_ops = None  # 延迟初始化
-        self.profile_path = ".\profile_result.json"
+        # profile_path 默认为 None，表示不使用 profile 决策（仅用静态规则）
+        self.profile_path = _path
         self._profile_cache: Optional[Dict[str, Any]] = None  # 缓存profile
         
     def _get_ops(self) -> Set[str]:
@@ -74,7 +75,9 @@ class FusionHeuristics:
             raise TypeError(f"profile_path must be str or None, got {type(self.profile_path)}")
 
         if not os.path.exists(self.profile_path):
-            raise FileNotFoundError(f"Profile json not found: {self.profile_path}")
+            if self.config.debug_mode:
+                print(f"[Fusion] Profile file not found: {self.profile_path}, using static heuristics only")
+            return {"single": {}, "fused": {}}
 
         with open(self.profile_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -154,6 +157,10 @@ class FusionHeuristics:
             print(f"[Fusion] Accept: graph with {len(graph.nodes)} nodes")
         
         # --------------------  基于 profile 决策是否融合 --------------------
+        
+        # 如果没有提供 profile_path，跳过 profile 决策，直接返回 True（使用静态规则）
+        if self.profile_path is None:
+            return True
 
         input_dtypes = getattr(self.config, "input_dtypes", None)
         if input_dtypes is None:# 临时兜底：全部当 fp16
@@ -163,6 +170,12 @@ class FusionHeuristics:
         single_t = profile.get("single", {}) or {} # 单个算子独立 kernel 的执行时间
 
         fused_t = profile.get("fused", {}) or {}
+        
+        # 如果 profile 为空（文件不存在或加载失败），跳过 profile 决策
+        if not single_t and not fused_t:
+            if self.config.debug_mode:
+                print("[Fusion] Profile data empty, using static heuristics only")
+            return True
 
         supported = self._get_ops()
         op_types = [n.op_type for n in graph.nodes]

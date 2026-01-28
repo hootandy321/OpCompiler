@@ -33,14 +33,14 @@ def pytest_addoption(parser):
     parser.addoption(
         "--warmup", 
         action="store", 
-        default=20, 
+        default=50, 
         type=int,
-        help="Number of warmup iterations for benchmark tests"
+        help="Number of warmup iterations for benchmark tests (increased for Triton autotuning)"
     )
     parser.addoption(
         "--runs", 
         action="store", 
-        default=100, 
+        default=200, 
         type=int,
-        help="Number of benchmark runs"
+        help="Number of benchmark runs for stable measurements"
     )
