@@ -208,37 +208,31 @@ def load_model_with_strategy(
     device,
     tp: int,
     strategy: str,
+    profile_path: str = None,
+    debug: bool = False,
 ) -> tuple:
     """
-    根据策略加载模型 (使用 FusionScheduler 融合机制)
+    根据策略加载模型 (使用 C++ infiniop 融合后端)
     
-    strategy: "always_fuse" | "never_fuse" | "smart_schedule"
+    Args:
+        model_path: 模型路径
+        device: 设备
+        tp: 张量并行度
+        strategy: 策略 - "always_fuse" | "never_fuse" | "smart_schedule"
+        profile_path: profile 数据路径 (仅 smart_schedule 时使用)
+        debug: 是否打印调试信息
     """
     model_path = os.path.expanduser(model_path)
     
-    # 导入 FusionConfig (用户的融合配置)
-    try:
-        from infinicore.fusion import FusionConfig
-        FUSION_AVAILABLE = True
-    except ImportError:
-        FUSION_AVAILABLE = False
-        print("[Warning] infinicore.fusion not available, falling back to basic mode")
-    
     if strategy == "always_fuse":
-        # 使用 FusedInferEngine，强制融合
-        # FusionConfig: enable_fusion=True, 不使用 profile 决策
-        fusion_config = FusionConfig(
-            enable_fusion=True,
-            fallback_on_error=True,
-            debug_mode=True,  # 显示融合决策
-        ) if FUSION_AVAILABLE else None
-        
+        # 使用 FusedInferEngine，始终融合
         model = FusedInferEngine(
             model_path,
             device=device,
             distributed_config=DistConfig(tp),
             enable_fusion=True,
-            fusion_config=fusion_config,
+            fusion_mode="always",
+            debug=debug,
         )
         
     elif strategy == "never_fuse":
@@ -250,21 +244,15 @@ def load_model_with_strategy(
         )
         
     elif strategy == "smart_schedule":
-        # 使用 FusedInferEngine + FusionScheduler 智能调度
-        # FusionScheduler 会根据 should_fuse() 读取 profile 数据决策
-        fusion_config = FusionConfig(
-            enable_fusion=True,
-            enable_cache=True,  # 启用 kernel 缓存
-            fallback_on_error=True,
-            debug_mode=True,
-        ) if FUSION_AVAILABLE else None
-        
+        # 使用 FusedInferEngine，基于 profile 智能调度
         model = FusedInferEngine(
             model_path,
             device=device,
             distributed_config=DistConfig(tp),
             enable_fusion=True,
-            fusion_config=fusion_config,
+            fusion_mode="profile",
+            profile_path=profile_path,
+            debug=debug,
         )
         
     else:

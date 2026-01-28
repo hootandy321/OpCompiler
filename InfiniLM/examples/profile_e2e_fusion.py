@@ -178,31 +178,22 @@ def profile_single_inference(
 
 
 def load_model_with_strategy(model_path: str, device, tp: int, strategy: str):
-    """加载模型"""
+    """加载模型 (使用 C++ infiniop 融合后端)"""
     model_path = os.path.expanduser(model_path)
     
-    try:
-        from infinicore.fusion import FusionConfig
-        FUSION_AVAILABLE = True
-    except ImportError:
-        FUSION_AVAILABLE = False
-    
     if strategy == "always_fuse":
-        fusion_config = FusionConfig(
-            enable_fusion=True,
-            fallback_on_error=True,
-            debug_mode=False,  # Profile 时关闭 debug 输出
-        ) if FUSION_AVAILABLE else None
-        
+        # 使用 FusedInferEngine，始终融合
         model = FusedInferEngine(
             model_path,
             device=device,
             distributed_config=DistConfig(tp),
             enable_fusion=True,
-            fusion_config=fusion_config,
+            fusion_mode="always",
+            debug=False,  # Profile 时关闭 debug 输出
         )
         
     elif strategy == "never_fuse":
+        # 使用普通 InferEngine，不融合
         model = InferEngine(
             model_path,
             device=device,
@@ -210,19 +201,14 @@ def load_model_with_strategy(model_path: str, device, tp: int, strategy: str):
         )
         
     elif strategy == "smart_schedule":
-        fusion_config = FusionConfig(
-            enable_fusion=True,
-            enable_cache=True,
-            fallback_on_error=True,
-            debug_mode=False,
-        ) if FUSION_AVAILABLE else None
-        
+        # 使用 FusedInferEngine，基于 profile 智能调度
         model = FusedInferEngine(
             model_path,
             device=device,
             distributed_config=DistConfig(tp),
             enable_fusion=True,
-            fusion_config=fusion_config,
+            fusion_mode="profile",
+            debug=False,
         )
         
     else:
