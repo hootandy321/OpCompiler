@@ -187,9 +187,9 @@ def run_inference(
         input_ids_infini,
         GenerationConfig(
             max_new_tokens=max_new_tokens, 
-            temperature=1, 
+            temperature=0,  # Greedy decoding - bypasses random_sample bug
             top_k=1, 
-            top_p=0.8
+            top_p=1.0
         ),
     )
     end = time.perf_counter()
