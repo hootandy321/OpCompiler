@@ -1,31 +1,66 @@
-# Xmake cache
-.xmake/
-build/
-python/infinilm/lib/*.so
-
-# MacOS Cache
-.DS_Store
-
-# Vscode
-.vscode/
-
 # Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 *.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Log
+# C++ Build
+build/
+*.o
+*.a
+*.dylib
+cmake-build-*/
+xmake-build/
+.xmake/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+*.DS_Store
+.AppleDouble
+.LSOverride
+
+# SyncThings
+.stfolder/
+.stignore
+
+# Sync conflict files (Syncthing, cloud IDE sync)
+*.sync-conflict-*
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Logs
 *.log
 
 # Cache
 .cache/
 
-# JSON
-*.json
+# Third party dependencies (use git submodules instead)
+InfiniCore/third_party/
 
-#GGUF
+# Models & Data (if any)
+*.ckpt
+*.pth
+*.bin
+*.safetensors
 *.gguf
+data/
+.pytest_cache/
 
-# txt
-*.txt
-
-*.http
+# Important: Don't ignore all JSON/TXT files - only specific ones
+# *.json  # Commented out - too broad
+# *.txt   # Commented out - too broad

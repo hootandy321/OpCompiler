@@ -1,372 +1,156 @@
-# Infini 自动算子融合框架
+# InfiniLM
 
-> **内部开发仓库** - 实现 LLM 推理过程中的自动算子融合优化
+本项目是基于 [`InfiniCore`](https://github.com/InfiniTensor/InfiniCore) 的推理引擎。
 
----
+## 使用方式
 
-## 📍 项目目标
+- 编译并安装 `InfiniCore` 。注意根据提示设置好 `INFINI_ROOT` 环境变量（默认为 `$HOME/.infini`）。
 
-**最终目标**：在 InfiniLM 推理对话过程中，自动识别可融合的算子组合，动态编译融合内核，尽量能实现性能提升。
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  用户发送 Prompt → InfiniLM 推理 → 自动融合加速 → 返回响应       │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🏗️ 模块关系图
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      InfiniLM (推理引擎)                         │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  InferEngine (Python)                                    │   │
-│  │       ↓ pybind11                                         │   │
-│  │  _infinilm.InferEngine (C++)                             │   │
-│  │       ↓                                                  │   │
-│  │  LlamaForCausalLM → LlamaDecoderLayer                    │   │
-│  │       ↓                    ↓                             │   │
-│  │  [Attention]          [MLP (SwiGLU)]  ← 融合点 ★          │   │
-│  │       ↓                    ↓                             │   │
-│  │  [Add + RMSNorm]  ← 融合点 ★                              │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              ↓                                  │
-│                    调用 InfiniCore 算子                          │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ↓
-┌──────────────────────────────┴──────────────────────────────────┐
-│                     InfiniCore (算子库)                          │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  infinicore.nn.functional.silu/gelu/relu/rms_norm        │   │
-│  │  infinicore.add / infinicore.mul                         │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              ↓                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  fusion/ (本项目核心)                                     │   │
-│  │    ├── FusionScheduler   ← 运行时调度器                   │   │
-│  │    ├── FusionHeuristics  ← 融合决策 (静态规则/Profile)    │   │
-│  │    ├── KernelCompiler    ← 调用 ninetoothed 编译         │   │
-│  │    └── SubGraph/OpNode   ← 子图数据结构                   │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ↓
-┌──────────────────────────────┴──────────────────────────────────┐
-│                 ninetoothed + ntops (编译后端)                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  ninetoothed.make()     → 创建内核句柄                    │   │
-│  │  ninetoothed.fusion     → 融合多个内核                    │   │
-│  │  ntops.kernels.*        → 算子 premake 函数               │   │
-│  │       ↓                                                  │   │
-│  │  Triton Kernel          → GPU 执行                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🎯 分阶段目标
-
-### Phase 1: 核心机制 ✅ 已完成
-
-| 任务 | 状态 | 说明 |
-|------|------|------|
-| SubGraph/OpNode 数据结构 | ✅ | 不可变、可哈希的子图表示 |
-| FusionConfig 配置 | ✅ | enable_fusion, min_nodes, fallback_on_error 等 |
-| FusionHeuristics 静态规则 | ✅ | 算子白名单、张量大小阈值 |
-| KernelCompiler | ✅ | 调用 ninetoothed 编译融合内核 |
-| FusionScheduler 调度器 | ✅ | 缓存、分发、回退机制 |
-| 单元测试 | ✅ | 18 个测试通过 |
-| SwiGLU 端到端验证 | ✅ | 融合路径验证成功 |
-
-### Phase 2: 融合决策机制 ⬜ 设计中
-
-**目标**：基于 Profile 时间决定是否融合（而非仅靠静态规则）
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    融合决策流程                                   │
-├─────────────────────────────────────────────────────────────────┤
-│  输入: SubGraph (算子序列)                                       │
-│    ↓                                                            │
-│  [1] 静态规则检查 (当前已有)                                      │
-│      - 算子白名单 ✅                                             │
-│      - 节点数 >= min_nodes ✅                                    │
-│      - 张量大小 >= min_tensor_elements ✅                        │
-│    ↓                                                            │
-│  [2] Profile 决策 (待实现)                                       │
-│      - 首次遇到: 运行 Fallback 并记录时间 T_fallback             │
-│      - 编译融合内核并运行: 记录时间 T_fused                       │
-│      - 如果 T_fused < T_fallback × ratio: 缓存融合内核           │
-│      - 否则: 标记为"不融合"，后续直接走回退                        │
-│    ↓                                                            │
-│  [3] 缓存复用                                                   │
-│      - cache_key = hash(graph + dtypes + shapes)                │
-│      - 命中缓存: 直接执行融合内核                                 │
-│      - 未命中: 走 [2]                                            │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**需要实现的接口**：
-
-```python
-class FusionHeuristics:
-    def should_fuse(self, graph, input_shapes) -> bool:
-        """静态规则判断"""
-        ...
-    
-    def profile_and_decide(self, graph, inputs) -> bool:
-        """Profile 决策 (待实现)"""
-        t_fallback = self._benchmark_fallback(graph, inputs)
-        t_fused = self._benchmark_fused(graph, inputs)
-        return t_fused < t_fallback * self.config.fusion_ratio
-```
-
-**待办事项**：
-- [ ] 实现 `_benchmark_fallback()` 和 `_benchmark_fused()`
-- [ ] 添加 `profile_cache` 存储 Profile 结果
-- [ ] 添加 `fusion_ratio` 配置项 (默认 0.8 = 20% 加速才融合)
-
-### Phase 3: InfiniLM 集成 ⬜ 阻塞中
-
-**🔑 关键发现：InfiniCore Graph Recording 机制**
-
-InfiniCore 已有运行时图录制机制，可以作为 FusionScheduler 的输入源！
-
-```python
-# 现有 API (infinicore/context.py)
-import infinicore
-
-# 1. 开始录制
-infinicore.start_graph_recording()
-
-# 2. 执行算子（会被录制而非立即执行）
-c = infinicore.matmul(a, b)
-d = infinicore.add(c, bias)
-
-# 3. 停止录制，获得 Graph 对象
-graph = infinicore.stop_graph_recording()
-
-# 4. 执行录制的图
-graph.run()
-```
-
-**集成思路**：
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  InfiniLM 推理流程 (改进后)                                       │
-├─────────────────────────────────────────────────────────────────┤
-│  LlamaDecoderLayer.forward()                                    │
-│       ↓                                                         │
-│  infinicore.start_graph_recording() ← 开始录制                   │
-│       ↓                                                         │
-│  [原始算子调用: silu, mul, add, rms_norm...]                      │
-│       ↓                                                         │
-│  recorded_graph = infinicore.stop_graph_recording() ← 停止录制   │
-│       ↓                                                         │
-│  ┌── FusionScheduler.analyze(recorded_graph) ──┐                │
-│  │   分析录制的图，识别融合模式                    │                │
-│  │   - 转换 recorded_graph → SubGraph            │                │
-│  │   - 调用 KernelCompiler 编译融合内核           │                │
-│  └────────────────────────────────────────────┘                │
-│       ↓                                                         │
-│  fused_kernel() 或 recorded_graph.run() ← 执行                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**待实现的转换接口**：
-
-```python
-# 新增: infinicore/fusion/graph_converter.py
-
-def convert_recorded_graph_to_subgraph(recorded_graph: infinicore.Graph) -> SubGraph:
-    """
-    将 InfiniCore 录制的 Graph 转换为 FusionScheduler 可处理的 SubGraph。
-    
-    1. 遍历 recorded_graph 中的算子节点
-    2. 提取算子类型、输入、输出名称
-    3. 构建 OpNode 序列
-    4. 返回 SubGraph
-    """
-    # TODO: 需要访问 recorded_graph._graph 的内部结构
-    pass
-```
-
-**当前挑战**：InfiniLM 有两条推理路径
-
-| 路径 | 实现 | 融合集成难度 |
-|------|------|-------------|
-| **路径 A: Python** | `modeling_llama.py` | ✅ 简单 - 已有融合代码分支 |
-| **路径 B: C++** | `csrc/` + pybind11 | ❌ 困难 - 需要 C++ 层改动 |
-
-**问题**：当前 `InferEngine` 使用 C++ 后端，Python 侧融合代码不会被调用。
-
-```
-用户调用 InferEngine.forward()
-    ↓
-pybind11 调用 C++ InferEngine::forward()
-    ↓
-C++ LlamaDecoderLayer::forward()  ← 这里执行实际计算
-    ↓
-C++ 算子 (InfiniCore C++ API)     ← Python FusionScheduler 无法介入
-```
-
-**解决方案选项**：
-
-| 方案 | 描述 | 难度 | 推荐 |
-|------|------|------|------|
-| A | 在 C++ 层实现 FusionScheduler | 高 | 生产方案 |
-| B | 创建 Python-only 推理路径 | 中 | 验证方案 ✅ |
-| C | 通过 JIT 劫持 C++ 调用 | 高 | 不推荐 |
-
-**方案 B 实施步骤** (推荐先做):
-
-```python
-# 新文件: InfiniLM/python/infinilm/infer_engine_python.py
-
-class InferEnginePython:
-    """纯 Python 推理引擎，用于验证融合效果"""
-    
-    def __init__(self, model_path, device, enable_fusion=True):
-        self.model = LlamaForCausalLM.from_pretrained(model_path, device)
-        self.model.config.enable_fusion = enable_fusion
-    
-    def forward(self, input_ids, **kwargs):
-        return self.model.forward(input_ids, **kwargs)
-```
-
-### Phase 4: 性能验证与优化 ⬜ 待开始
-
-- [ ] 端到端 Benchmark (Prefill + Decode 延迟)
-- [ ] 吞吐量对比 (tok/s)
-- [ ] 内存占用分析
-- [ ] 更多融合模式 (GEGLU, Attention 内融合)
-
----
-
-## 📊 当前实现状态
-
-### 代码结构
-
-```
-Infini/
-├── InfiniCore/python/infinicore/fusion/    # 本项目核心
-│   ├── __init__.py             # 导出 FusionScheduler 等
-│   ├── fusion_scheduler.py     # ⭐ 运行时调度器 (240 行)
-│   ├── fusion_config.py        # 配置 dataclass
-│   ├── heuristics.py           # 静态启发式规则
-│   ├── subgraph.py             # OpNode, SubGraph 数据结构
-│   ├── kernel_compiler.py      # ninetoothed 编译封装
-│   └── patterns/
-│       └── llm_patterns.py     # SwiGLU, Add+RMSNorm 模式
-│
-├── InfiniLM/python/infinilm/
-│   ├── fusion_utils.py         # FusionManager, LLMFusionContext
-│   └── models/llama/
-│       └── modeling_llama.py   # LlamaMLP/LlamaDecoderLayer 融合分支
-│
-├── ninetoothed/                 # 符号化内核编译器
-│   └── src/ninetoothed/
-│       ├── fusion.py           # _fuse_nodes, Node 类
-│       └── make.py             # make() 创建内核句柄
-│
-└── ntops/                       # 算子库
-    └── kernels/
-        ├── silu.py, gelu.py    # premake() 函数
-        ├── add.py, mul.py
-        └── rms_norm.py
-```
-
-### 测试状态
-
-| 测试文件 | 状态 | 说明 |
-|----------|------|------|
-| `test_fusion_scheduler.py` | ✅ 18 passed | 无 GPU 可运行 |
-| `test_fusion_integration.py` | ⚠️ 需 CUDA | Handle 创建测试 |
-| `test_fusion_ntops.py` | ✅ 3 passed | SwiGLU 融合验证 |
-| `bench_fusion.py` | ⚠️ 需 CUDA | 性能基准测试 |
-
----
-
-## � 下一步行动
-
-### 立即可做 (无阻塞)
-
-1. **添加 Profile 决策机制**
-   - 文件: `heuristics.py`
-   - 实现: `profile_and_decide()` 方法
-
-2. **添加 `enable_fusion` 到 LlamaConfig**
-   - 文件: `infinilm/models/llama/configuration_llama.py`
-   - 验证: `python InfiniLM/test_llama_fusion.py`
-
-### 短期 (需要决策)
-
-3. **创建 Python-only 推理验证脚本**
-   - 目的: 绕过 C++ 后端，验证融合效果
-   - 新文件: `InfiniLM/examples/llama_fusion_demo.py`
-
-### 中期 (需要更多投入)
-
-4. **C++ 层融合集成** (如选择方案 A)
-   - 需要修改: `csrc/layers/`, `csrc/models/`
-   - 评估: 是否值得在 C++ 层重新实现调度器
-
----
-
-## 💻 快速开始
-
-### 配置环境
+- 编译并安装 `InfiniLM`
 
 ```bash
-cd InifiCore
-pip install -e .
-cd ntops
-pip install -e .
+xmake && xmake install
 ```
 
-### 运行单元测试
+- 运行模型推理测试
 
 ```bash
-cd InfiniCore
-python -m pytest test/infinicore/test_fusion_scheduler.py -v
-# 预期: 18 passed
+python scripts/jiuge.py [--cpu | --nvidia | --qy | --cambricon | --ascend | --metax | --moore | --iluvatar | --kunlun | --hygon] path/to/model_dir [n_device]
 ```
 
-### 运行 GPU 集成测试
+- 部署模型推理服务
 
 ```bash
-cd InfiniCore
-export PYTHONPATH=$PYTHONPATH:$(pwd)/python
-python -m pytest test/infinicore/test_fusion_ntops.py -v
-# 预期: 3 passed
+python scripts/launch_server.py --model-path MODEL_PATH [-h] [--dev {cpu,nvidia,qy, cambricon,ascend,metax,moore,iluvatar,kunlun,hygon}] [--ndev NDEV] [--max-batch MAX_BATCH] [--max-tokens MAX_TOKENS]
 ```
 
-### 基本用法
+- 测试模型推理服务性能
 
-```python
-from infinicore.fusion import FusionScheduler, FusionConfig
-from infinicore.fusion.patterns.llm_patterns import create_swiglu_pattern
-
-# 创建调度器
-config = FusionConfig(enable_fusion=True, debug_mode=True)
-scheduler = FusionScheduler(config)
-
-# 执行 SwiGLU 融合
-graph = create_swiglu_pattern()
-outputs = scheduler.dispatch(graph, {"gate": gate_tensor, "up": up_tensor})
+```bash
+python scripts/test_perf.py
 ```
 
----
+- 使用推理服务测试模型困惑度（Perplexity）
 
-## � 相关文档
+```bash
+python scripts/test_ppl.py --model-path MODEL_PATH [--ndev NDEV] [--max-batch MAX_BATCH] [--max-tokens MAX_TOKENS]
+```
 
-- [InfiniLM 架构文档](InfiniLM/CODEREADME_ANALYSIS.md) - 双轨推理路径详解
-- [ninetoothed 文档](ninetoothed/README.md) - 符号化内核编译
-- [ntops 文档](ntops/README.md) - 算子 premake API
+## 使用方式(新版)
+#### 一、编译并安装 `InfiniCore`
+编译并安装 `InfiniCore`， 详情见 InfiniCore的 [`README`](https://github.com/InfiniTensor/InfiniCore) :
 
----
+- 注意根据提示设置好 `INFINI_ROOT` 环境变量（默认为 `$HOME/.infini`）
+- 根据硬件平台，选择 xmake 构建配置
+- 编译安装InfiniCore
+- 安装 C++ 库
+- 安装 Python 包
 
-*最后更新: 2026-01-21*
+
+#### 二、编译并安装  `InfiniLM`
+  - 克隆项目
+
+    由于仓库中含有子模块，所以在克隆时请添加 `--recursive` 或 `--recurse-submodules`，如：
+
+    ```shell
+    git clone --recursive https://github.com/InfiniTensor/InfiniLM.git
+    ```
+
+    或者在普通克隆后进行更新：
+
+    ```shell
+    git submodule update --init --recursive
+    ```
+
+
+  - 安装 InfiniLM Python 包
+    ```bash
+      pip install -e .
+    ```
+
+  - 单次推理测试
+    - llama示例
+    ```bash
+    python examples/llama.py [--cpu | --nvidia | --metax | --moore | --iluvatar] --model_path=<path/to/model_dir>
+    ```
+    - 例如：
+    ```bash
+    python examples/llama.py --nvidia --model_path=/models/TinyLlama-1.1B-Chat-v1.0
+    ```
+  - 分布式推理测试
+      - 9g示例
+      ```bash
+    python examples/jiuge.py [---nvidia] --model_path=<path/to/model_dir> --backend=cpp --tp=NDEV --batch_size=MAX_BATCH
+    ```
+
+    - 例如： 9G7B模型，cpp后端，batch_size为16，4卡分布式
+    ```bash
+    python examples/jiuge.py --nvidia --model_path=/models/9G7B_MHA/ --backend=cpp --tp=4 --batch_size=16
+    ```
+
+
+  - 推理服务测试
+    - 启动推理服务
+      ```bash
+      python python/infinilm/server/inference_server.py [--cpu | --nvidia | --metax | --moore | --iluvatar | --cambricon] --model_path=<path/to/model_dir> --max_tokens=MAX_TOKENS --max_batch_size=MAX_BATCH --tp=NDEV --temperature=TEMP --top_p=TOP_P --top_k=TOP_K --host=HOST --port=PORT
+      ```
+    
+    - 单卡示例：
+      ```bash
+      CUDA_VISIBLE_DEVICES=0 python python/infinilm/server/inference_server.py --nvidia --model_path=/models/9G7B_MHA/ --max_tokens=100 --max_batch_size=32 --tp=1 --temperature=1.0 --top_p=0.8 --top_k=1
+      ```
+    
+    - 多卡分布式示例：
+      ```bash
+      CUDA_VISIBLE_DEVICES=0,1,2,3 python python/infinilm/server/inference_server.py --nvidia --model_path=/models/9G7B_MHA/ --max_tokens=100 --max_batch_size=32 --tp=4 --temperature=1.0 --top_p=0.8 --top_k=1
+      ```
+    
+    - 测试推理服务性能：
+      ```bash
+      python scripts/test_perf.py --verbose
+      ```
+
+  - 运行推理基准测试（C-Eval/MMLU）
+
+    ```bash
+    python test/bench/test_benchmark.py [--cpu | --nvidia | --cambricon | --ascend | --metax | --moore | --iluvatar | --kunlun | --hygon] <path/to/model_dir> --bench {ceval|mmlu} [--backend cpp] [--ndev N] [--subject SUBJECT] [--num_samples N] [--max_new_tokens N] [--output_csv PATH] [--cache_dir PATH]
+    ```
+
+    - 参数说明：
+      - `--subject`: 指定科目，支持单个科目、多个科目（逗号分隔）或 `all`（默认值，加载全部科目）
+      - `--output_csv`: 可选，指定CSV输出文件路径。如未指定则不生成CSV文件。CSV包含每个科目的结果和总体结果
+      - `--cache_dir`: 可选，指定数据集缓存目录的父目录。应指向包含 `ceval___ceval-exam` 和 `cais___mmlu` 等数据集子目录的父目录（例如 `~/.cache/huggingface/datasets/`）。设置后脚本优先使用本地 CSV（`pandas.read_csv`）离线加载数据，避免 `load_dataset` 的网络请求
+
+    - C-Eval示例：
+      - 单个科目：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench ceval --subject middle_school_mathematics --num_samples 100 --backend cpp --ndev 1
+        ```
+      - 多个科目（逗号分隔）：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench ceval --subject middle_school_mathematics,high_school_physics --backend cpp --ndev 1 --output_csv results.csv
+        ```
+      - 全部科目并输出CSV：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench ceval --subject all --backend cpp --ndev 1 --output_csv results.csv
+        ```
+      - 使用缓存目录加速加载：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench ceval --subject middle_school_mathematics --backend cpp --ndev 1 --cache_dir ~/.cache/huggingface/datasets/
+        ```
+        > 注意：`--cache_dir` 应指向包含 `ceval___ceval-exam` 和 `cais___mmlu` 等数据集子目录的父目录，而不是直接指向这些子目录
+
+    - MMLU示例：
+      - 单个科目：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench mmlu --subject abstract_algebra --backend cpp --ndev 1
+        ```
+      - 多个科目（逗号分隔）：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench mmlu --subject abstract_algebra,anatomy,astronomy --backend cpp --ndev 1 --output_csv results.csv
+        ```
+      - 使用缓存目录加速加载：
+        ```bash
+        python test/bench/test_benchmark.py --nvidia /models/9G7B_MHA --bench mmlu --subject abstract_algebra --backend cpp --ndev 1 --cache_dir ~/.cache/huggingface/datasets/
+        ```
+        > 注意：`--cache_dir` 应指向包含 `ceval___ceval-exam` 和 `cais___mmlu` 等数据集子目录的父目录，而不是直接指向这些子目录
