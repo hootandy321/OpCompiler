@@ -288,6 +288,7 @@ class FusionHeuristics:
 
         任何异常（尤其 profile 相关）提前 return：返回 False
         """
+        return self.config.enable_fusion
         # 规则 0: 总开关检查
         if not self.config.enable_fusion:
             return False

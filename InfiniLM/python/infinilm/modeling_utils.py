@@ -123,6 +123,7 @@ def load_model_state_dict_by_file(
     model: infinicore.nn.Module,
     model_path: str,
     dtype=infinicore.dtype,
+    device=None,
 ) -> Dict[str, infinicore.Tensor]:
     """
     Load the model weights from file.
@@ -130,7 +131,7 @@ def load_model_state_dict_by_file(
     print(" load weights ......")
     t1 = time.time()
 
-    torch_device = "cpu"
+    torch_device = device.type if device is not None else "cpu"
     torch_dtype = infinicore.utils.to_torch_dtype(dtype)
     model_keys = model.state_dict_keyname()
 
@@ -161,7 +162,7 @@ def load_model_state_dict_by_file(
 
     elif os.path.exists(os.path.join(model_path, "pytorch_model.bin")):
         file_path = os.path.join(model_path, "pytorch_model.bin")
-        model_params = torch.load(file_path, weights_only=True, map_location="cpu")
+        model_params = torch.load(file_path, weights_only=True, map_location=torch_device)
 
         model_param_infini = {}
         for key in model_params.keys():

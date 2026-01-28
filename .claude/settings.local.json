@@ -15,7 +15,11 @@
       "Bash(git rm:*)",
       "Bash(git commit:*)",
       "Bash(git reset:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(xmake build:*)",
+      "Bash(xmake install:*)",
+      "Bash(xmake clean:*)"
     ],
     "deny": [],
     "ask": []

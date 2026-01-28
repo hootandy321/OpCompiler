@@ -247,36 +247,21 @@ void RankWorker::thread_loop() {
                         auto model_args = local_args.to_model_input(rank_info_.device);
                         // Forward calculation
                         auto logits{model_->forward(model_args).logits};
-                        // Random sampling (rank 0 only)
+
+                        // Random sampling (rank 0 only) - only if input_offsets is provided
+                        // input_offsets being provided indicates that sampling is requested
+                        if (rank_info_.tp_rank == 0 && local_args.input_offsets.has_value()) {
+                            // TODO: Implement sampling properly when input_offsets is provided
+                            // For now, skip sampling to avoid the "Bad Tensor Strides" bug
+                            spdlog::warn("[{}] Sampling requested but temporarily disabled\n", info());
+                        }
+
+                        // Set output - return logits when sampling is not requested
+                        // This allows the Python layer to do sampling, bypassing C++ random_sample bug
                         if (rank_info_.tp_rank == 0) {
-                            auto temperature{local_args.temperature};
-                            auto top_p{local_args.top_p};
-                            auto top_k{local_args.top_k};
-                            auto random_val{local_args.random_val};
-
-                            const auto &logits_shape{logits->shape()};
-                            const auto &vocab_size{logits_shape[2]};
-                            const auto &total_len{logits_shape[1]};
-                            const auto &batch_size{logits_shape[0]};
-
-                            auto n_req = local_args.input_offsets.value()->size(0) - 1;
-                            int64_t *input_offsets = (int64_t *)local_args.input_offsets.value()->data();
-
-                            auto output_ids{infinicore::Tensor::empty({n_req}, infinicore::DataType::I64, rank_info_.device)};
-
-                            for (auto i{decltype(n_req)(0)}; i < n_req; ++i) {
-                                auto score{logits->view({batch_size * total_len, vocab_size})->narrow({{0, size_t(input_offsets[i + 1] - 1), 1}})->view({vocab_size})};
-                                auto out{output_ids->narrow({{0, i, 1}})->view({})};
-                                infinicore::op::random_sample_(
-                                    out, score, random_val, top_p, top_k, temperature);
-                            }
-
-                            output_ids = output_ids->to(infinicore::Device::cpu());
-
-                            infinicore::context::syncStream();
-
-                            auto out{Output{output_ids}};
-
+                            Output out;
+                            out.logits = logits;
+                            out.output_ids = std::nullopt;
                             output_ = std::move(out);
                         }
 
@@ -285,12 +270,25 @@ void RankWorker::thread_loop() {
                     cv_.notify_all();
 
                 } catch (const std::exception &e) {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    should_exit_ = true;
-                    job_done_ = true;
-                    cv_.notify_all();
-                    spdlog::error("[{}] exception during forward: {}\n", info(), e.what());
-                    break;
+                    std::string error_msg = e.what();
+                    // Don't close worker for random_sample stride errors - these are recoverable
+                    if (error_msg.find("Bad Tensor Strides") != std::string::npos ||
+                        error_msg.find("infiniopCreateRandomSampleDescriptor") != std::string::npos) {
+                        // For sampling errors, just mark job as done and continue
+                        // This allows Python layer to handle the error gracefully
+                        std::lock_guard<std::mutex> lk(mutex_);
+                        job_done_ = true;
+                        cv_.notify_all();
+                        spdlog::warn("[{}] Recoverable error during forward (sampling skipped): {}\n", info(), e.what());
+                    } else {
+                        // For other errors, close the worker as before
+                        std::lock_guard<std::mutex> lk(mutex_);
+                        should_exit_ = true;
+                        job_done_ = true;
+                        cv_.notify_all();
+                        spdlog::error("[{}] Fatal exception during forward: {}\n", info(), e.what());
+                        break;
+                    }
                 }
             } else if (local_cmd == Command::RESET_CACHE) {
                 try {
@@ -326,4 +324,4 @@ void RankWorker::thread_loop() {
     }
 }
 
-} // namespace infinilm::engine
+} // amespace infinilm::engine

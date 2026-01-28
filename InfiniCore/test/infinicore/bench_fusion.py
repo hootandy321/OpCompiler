@@ -30,8 +30,8 @@ from infinicore.fusion.subgraph import SubGraph
 # Default benchmark parameters
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_HIDDEN_DIM = 4096
-DEFAULT_WARMUP = 20
-DEFAULT_RUNS = 100
+DEFAULT_WARMUP = 50  # Increased for Triton autotuning
+DEFAULT_RUNS = 200   # More runs for stable measurements
 
 
 @pytest.fixture(scope="module")
@@ -91,10 +91,11 @@ def run_benchmark(
     func,
     args: tuple,
     warmup: int = 10,
-    runs: int = 100
-) -> float:
+    runs: int = 100,
+    separate_compilation: bool = False
+) -> Tuple[float, float]:
     """
-    Benchmark a function and return average latency.
+    Benchmark a function and return compilation + execution latency.
     
     Args:
         name: Name of the benchmark
@@ -102,17 +103,33 @@ def run_benchmark(
         args: Arguments to pass to the function
         warmup: Number of warmup iterations
         runs: Number of benchmark runs
+        separate_compilation: If True, measure compilation separately
         
     Returns:
-        Average latency in milliseconds
+        Tuple of (compilation_time_ms, avg_execution_latency_ms)
     """
-    # Warmup
+    compilation_time = 0.0
+    
+    # Measure compilation time on first call
+    if separate_compilation:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        compile_start = time.perf_counter()
+        func(*args)  # First call triggers JIT compilation
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        compilation_time = (time.perf_counter() - compile_start) * 1000
+        print(f"[{name}] Compilation Time: {compilation_time:.4f} ms")
+        warmup = max(warmup - 1, 0)  # Already did one call
+    
+    # Warmup (for GPU kernel autotuning and cache warming)
     for _ in range(warmup):
         func(*args)
     
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         
+    # Actual benchmark
     start_time = time.perf_counter()
     for _ in range(runs):
         func(*args)
@@ -122,8 +139,9 @@ def run_benchmark(
     end_time = time.perf_counter()
     
     avg_latency = (end_time - start_time) / runs * 1000  # ms
-    print(f"[{name}] Avg Latency: {avg_latency:.4f} ms")
-    return avg_latency
+    print(f"[{name}] Avg Execution Latency: {avg_latency:.4f} ms (after warmup)")
+    
+    return compilation_time, avg_latency
 
 
 class TestFusionBenchmark:
@@ -138,7 +156,7 @@ class TestFusionBenchmark:
         """
         Main benchmark test comparing fused vs non-fused execution for all LLM patterns.
         
-        This test will always pass but prints performance metrics.
+        This test separates compilation time from execution time and uses proper warmup.
         """
         device, dtype = device_info
         batch_size = benchmark_config["batch_size"]
@@ -159,7 +177,7 @@ class TestFusionBenchmark:
         print(f"Pattern inputs: {list(test_inputs.keys())}")
         print(f"Pattern outputs: {graph.output_names}")
         
-        # 1. Non-fused Scheduler
+        # 1. Non-fused Scheduler (baseline)
         config_off = FusionConfig(enable_fusion=False)
         scheduler_off = FusionScheduler(config_off)
         
@@ -167,20 +185,25 @@ class TestFusionBenchmark:
         config_on = FusionConfig(enable_fusion=True)
         scheduler_on = FusionScheduler(config_on)
         
-        # Benchmark
-        lat_off = run_benchmark(
+        # Benchmark with separate compilation measurement
+        print(f"\n--- Non-fused (Fallback) Execution ---")
+        compile_off, lat_off = run_benchmark(
             f"{pattern_name} - Standard (Fallback)", 
             scheduler_off.dispatch, 
             (graph, test_inputs), 
             warmup, 
-            runs
+            runs,
+            separate_compilation=False  # Fallback has no compilation
         )
-        lat_on = run_benchmark(
+        
+        print(f"\n--- Fused (Triton) Execution ---")
+        compile_on, lat_on = run_benchmark(
             f"{pattern_name} - Fused (Triton)", 
             scheduler_on.dispatch, 
             (graph, test_inputs), 
             warmup, 
-            runs
+            runs,
+            separate_compilation=True  # Measure JIT compilation
         )
         
         improvement = (lat_off - lat_on) / lat_off * 100
@@ -188,10 +211,13 @@ class TestFusionBenchmark:
         
         print(f"\n{'='*70}")
         print(f"Results for {pattern_name}:")
-        print(f"  Non-fused Latency: {lat_off:.4f} ms")
-        print(f"  Fused Latency:     {lat_on:.4f} ms")
-        print(f"  Speedup:           {speedup:.2f}x")
-        print(f"  Improvement:       {improvement:.2f}%")
+        print(f"  Non-fused Execution:    {lat_off:.4f} ms")
+        print(f"  Fused Compilation:      {compile_on:.4f} ms (one-time cost)")
+        print(f"  Fused Execution:        {lat_on:.4f} ms")
+        print(f"  Speedup:                {speedup:.2f}x")
+        print(f"  Improvement:            {improvement:.2f}%")
+        if compile_on > 0:
+            print(f"  Amortization Runs:      {int(compile_on / max(lat_off - lat_on, 0.001))}")
         print(f"{'='*70}\n")
         
         # Assert that both executions completed successfully
@@ -215,8 +241,8 @@ class TestFusionBenchmark:
         This parametrized test runs benchmarks for different configurations and patterns.
         """
         device, dtype = device_info
-        warmup = 10
-        runs = 50
+        warmup = 30  # Reduced for parametrized tests
+        runs = 100
         
         print(f"\nTesting {pattern_name} with Batch Size: {batch_size}, Hidden Dim: {hidden_dim}")
         
@@ -233,23 +259,25 @@ class TestFusionBenchmark:
         scheduler_on = FusionScheduler(config_on)
         
         # Benchmark
-        lat_off = run_benchmark(
+        _, lat_off = run_benchmark(
             f"{pattern_name} Non-fused (B={batch_size}, H={hidden_dim})", 
             scheduler_off.dispatch, 
             (graph, inputs), 
             warmup, 
-            runs
+            runs,
+            separate_compilation=False
         )
-        lat_on = run_benchmark(
+        compile_on, lat_on = run_benchmark(
             f"{pattern_name} Fused (B={batch_size}, H={hidden_dim})", 
             scheduler_on.dispatch, 
             (graph, inputs), 
             warmup, 
-            runs
+            runs,
+            separate_compilation=True
         )
         
         speedup = lat_off / lat_on
-        print(f"{pattern_name} Speedup: {speedup:.2f}x")
+        print(f"{pattern_name} Speedup: {speedup:.2f}x (Compile: {compile_on:.2f}ms, Exec: {lat_on:.4f}ms)")
         
         assert lat_off > 0 and lat_on > 0, f"{pattern_name} execution failed"
     
@@ -258,13 +286,13 @@ class TestFusionBenchmark:
         Test all predefined LLM fusion patterns from LLM_FUSION_PATTERNS list.
         
         This test iterates through all patterns defined in llm_patterns.py
-        and benchmarks each one.
+        and benchmarks each one with proper compilation time tracking.
         """
         device, dtype = device_info
         batch_size = benchmark_config["batch_size"]
         hidden_dim = benchmark_config["hidden_dim"]
-        warmup = benchmark_config["warmup"] // 2  # Reduce warmup for bulk testing
-        runs = benchmark_config["runs"] // 2      # Reduce runs for bulk testing
+        warmup = benchmark_config["warmup"] // 2  # Reduce for bulk testing
+        runs = benchmark_config["runs"] // 2
         
         print(f"\n{'='*70}")
         print(f"Testing All Predefined LLM Fusion Patterns")
@@ -292,19 +320,21 @@ class TestFusionBenchmark:
             scheduler_on = FusionScheduler(config_on)
             
             # Benchmark
-            lat_off = run_benchmark(
+            _, lat_off = run_benchmark(
                 f"{pattern_name} Non-fused",
                 scheduler_off.dispatch,
                 (pattern, inputs),
                 warmup,
-                runs
+                runs,
+                separate_compilation=False
             )
-            lat_on = run_benchmark(
+            compile_on, lat_on = run_benchmark(
                 f"{pattern_name} Fused",
                 scheduler_on.dispatch,
                 (pattern, inputs),
                 warmup,
-                runs
+                runs,
+                separate_compilation=True
             )
             
             speedup = lat_off / lat_on
@@ -314,21 +344,26 @@ class TestFusionBenchmark:
                 "pattern": pattern_name,
                 "inputs": pattern.input_names,
                 "non_fused_ms": lat_off,
+                "compile_ms": compile_on,
                 "fused_ms": lat_on,
                 "speedup": speedup,
                 "improvement_pct": improvement,
             })
             
             print(f"  Speedup: {speedup:.2f}x ({improvement:.2f}% improvement)")
+            print(f"  Compilation: {compile_on:.2f}ms")
         
         # Print summary
         print(f"\n{'='*70}")
         print(f"Summary of All Pattern Benchmarks")
         print(f"{'='*70}")
+        print(f"{'Pattern':<15} | {'Compile (ms)':<12} | {'Speedup':<8} | {'Improvement':<12}")
+        print(f"{'-'*70}")
         for result in results:
-            print(f"{result['pattern']:15s} | "
-                  f"Speedup: {result['speedup']:5.2f}x | "
-                  f"Improvement: {result['improvement_pct']:6.2f}%")
+            print(f"{result['pattern']:<15} | "
+                  f"{result['compile_ms']:>12.2f} | "
+                  f"{result['speedup']:>8.2f}x | "
+                  f"{result['improvement_pct']:>11.2f}%")
         print(f"{'='*70}\n")
         
         # Assert all patterns executed successfully
