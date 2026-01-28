@@ -39,19 +39,20 @@ public:
         /// Slot ids for each token `[seq]`. Used for paged cache.
         std::optional<infinicore::Tensor> slot_mapping;
 
-        float temperature{1};
-
-        int top_k{50};
-
-        float top_p{1};
-
-        float random_val{0.1};
+        // Sampling parameters - optional to allow returning logits without sampling
+        std::optional<float> temperature;
+        std::optional<int> top_k;
+        std::optional<float> top_p;
+        std::optional<float> random_val;
 
         infinilm::InfinilmModel::Input to_model_input(infinicore::Device device) const;
     };
 
     struct Output {
-        infinicore::Tensor output_ids;
+        // Sampled output IDs (when sampling is requested)
+        std::optional<infinicore::Tensor> output_ids;
+        // Raw logits (when sampling is NOT requested)
+        std::optional<infinicore::Tensor> logits;
     };
 
     RankWorker(const InfinilmModel::Config &model_config,

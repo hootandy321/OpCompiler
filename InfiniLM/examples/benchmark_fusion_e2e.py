@@ -161,10 +161,11 @@ def run_inference(
     tokenizer,
     prompt: str,
     max_new_tokens: int,
+    device,
 ) -> tuple:
     """
-    运行一次推理
-    
+    运行一次推理 (使用手动 Python 层 sampling 循环来绕过 C++ random_sample bug)
+
     Returns:
         (output_text, time_ms)
     """
@@ -174,33 +175,90 @@ def run_inference(
         add_generation_prompt=True,
         tokenize=False,
     )
-    input_ids_list = tokenizer.batch_encode_plus([input_content])["input_ids"]
-    
+    # Fix: use encode() instead of batch_encode_plus() for newer transformers versions
+    input_ids_list = [tokenizer.encode(input_content)]
+
     # Reset cache
     model.reset_cache(1, max_new_tokens + len(input_ids_list[0]))
-    
-    # Generate
-    input_ids_infini = infinicore.from_list(input_ids_list)
-    
+
+    input_ids_infini = infinicore.from_list(input_ids_list, device=device)
+
+    # 静默输出 (通过重定向 stdout)
+    import io
+    import sys
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+
     start = time.perf_counter()
-    output_ids = model.generate(
-        input_ids_infini,
-        GenerationConfig(
-            max_new_tokens=max_new_tokens, 
-            temperature=0,  # Greedy decoding - bypasses random_sample bug
-            top_k=1, 
-            top_p=1.0
-        ),
-    )
-    end = time.perf_counter()
+    try:
+        # 手动实现 generation 循环，使用 Python 层 sampling 绕过 C++ random_sample bug
+        batch_size, seq_len = input_ids_infini.shape[:2]
+
+        # 初始化 position_ids 和 cache_lengths
+        position_ids = infinicore.from_list(
+            [list(range(0, seq_len)) for _ in range(batch_size)],
+            dtype=infinicore.int64,
+            device=device,
+        )
+        cache_lengths = infinicore.from_list(
+            [0],
+            dtype=infinicore.int64,
+            device=device,
+        )
+
+        output_tokens_list = []
+        eos_token_id = model.config.eos_token_id
+        eos_token_id_list = [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
+
+        for _ in range(max_new_tokens):
+            # 调用 forward 获取 logits (不传递采样参数，避免触发 C++ 采样)
+            logits = model(
+                input_ids=input_ids_infini,
+                position_ids=position_ids,
+                cache_lengths=cache_lengths,
+            )
+            infinicore.sync_device()
+
+            # Python 层 greedy decoding (使用 argmax)
+            # Convert logits to numpy and do argmax there (infinicore doesn't have argmax)
+            logits_np = logits.to_numpy()
+            next_token_id = int(logits_np.argmax(axis=-1)[0, 0])
+            token_id = next_token_id
+            output_tokens_list.append(token_id)
+
+            # 检查 EOS
+            if token_id in eos_token_id_list:
+                break
+
+            # 准备下一轮输入
+            seq_len = position_ids.shape[-1]
+            input_ids_infini = infinicore.from_list(
+                [[token_id] for _ in range(batch_size)],
+                dtype=infinicore.int64,
+                device=device,
+            )
+            position_ids = infinicore.from_list(
+                [1] * batch_size,
+                dtype=infinicore.int64,
+                device=device,
+            ).view((batch_size, 1)) + position_ids.narrow(1, seq_len - 1, 1)
+            cache_lengths = cache_lengths + infinicore.from_list(
+                [seq_len],
+                dtype=infinicore.int64,
+                device=device,
+            )
+
+        # 解码输出
+        output_text = tokenizer.decode(output_tokens_list, skip_special_tokens=True)
+        print(output_text, end="", flush=True)
+    finally:
+        output_text = sys.stdout.getvalue()
+        sys.stdout = old_stdout
     
+    end = time.perf_counter()
     time_ms = (end - start) * 1000.0
     
-    # Decode
-    numpy_output_ids = np.array([output_id.to_numpy()[0] for output_id in output_ids])
-    output_text = tokenizer.decode(numpy_output_ids, skip_special_tokens=True)
-    
-    return output_text, time_ms
+    return output_text.strip(), time_ms
 
 
 def load_model_with_strategy(
@@ -310,12 +368,12 @@ def benchmark_strategy(
     # Warmup
     print(f"Warmup ({warmup} runs)...")
     for i in range(warmup):
-        _, _ = run_inference(model, tokenizer, prompt, max_new_tokens)
+        _, _ = run_inference(model, tokenizer, prompt, max_new_tokens, device)
     
     # Timed runs
     print(f"Benchmark ({runs} runs)...")
     for i in range(runs):
-        output_text, time_ms = run_inference(model, tokenizer, prompt, max_new_tokens)
+        output_text, time_ms = run_inference(model, tokenizer, prompt, max_new_tokens, device)
         times.append(time_ms)
         print(f"  Run {i+1}: {time_ms:.2f} ms")
     
@@ -350,6 +408,7 @@ def run_all_prompts_with_strategy(
     prompts: list,
     runs: int,
     warmup: int,
+    device,  # 添加 device 参数
 ) -> dict:
     """对一个策略运行所有 prompts"""
     results = {}
@@ -363,11 +422,11 @@ def run_all_prompts_with_strategy(
         
         # Warmup
         for _ in range(warmup):
-            run_inference(model, tokenizer, prompt, max_tokens)
+            run_inference(model, tokenizer, prompt, max_tokens, device)
         
         # Timed runs
         for _ in range(runs):
-            _, time_ms = run_inference(model, tokenizer, prompt, max_tokens)
+            _, time_ms = run_inference(model, tokenizer, prompt, max_tokens, device)
             times.append(time_ms)
         
         avg_time = sum(times) / len(times)
@@ -387,14 +446,16 @@ def main():
     # 确定设备
     if args.nvidia:
         device_str = "cuda"
+    elif args.iluvatar:
+        device_str = "cuda"  # ILUVATAR 使用 cuda 接口
     elif args.cpu:
         device_str = "cpu"
     elif args.metax:
-        device_str = "cuda"
+        device_str = "maca"
     elif args.moore:
         device_str = "musa"
     else:
-        print("Please specify device: --cpu, --nvidia, --metax, or --moore")
+        print("Please specify device: --cpu, --nvidia, --iluvatar, --metax, or --moore")
         sys.exit(1)
     
     device = infinicore.device(device_str, 0)
@@ -424,7 +485,7 @@ def main():
             
             print(f"Running {len(TEST_PROMPTS)} prompts...")
             results = run_all_prompts_with_strategy(
-                model, tokenizer, TEST_PROMPTS, args.runs, args.warmup
+                model, tokenizer, TEST_PROMPTS, args.runs, args.warmup, device
             )
             
             all_results[strategy] = results
@@ -568,4 +629,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

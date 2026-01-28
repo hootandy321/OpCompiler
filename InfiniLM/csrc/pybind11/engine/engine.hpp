@@ -96,16 +96,13 @@ inline void bind_infer_engine(py::module &m) {
                     std::move(slot_mapping),
                 };
 
-                // Explicit defaults
-                input.temperature = 1.0f;
-                input.top_p = 1.0f;
-                input.top_k = 1;
-
+                // Sampling parameters are now optional - only set if explicitly provided
                 // Allowed keyword arguments
                 static const std::unordered_set<std::string> allowed_kwargs = {
                     "temperature",
                     "top_p",
                     "top_k",
+                    "random_val",
                 };
 
                 for (auto &item : kwargs) {
@@ -122,6 +119,8 @@ inline void bind_infer_engine(py::module &m) {
                         input.top_p = py::cast<float>(item.second);
                     } else if (key == "top_k") {
                         input.top_k = py::cast<int>(item.second);
+                    } else if (key == "random_val") {
+                        input.random_val = py::cast<float>(item.second);
                     }
                 }
 
@@ -143,10 +142,12 @@ inline void bind_infer_engine(py::module &m) {
         .def_readwrite("slot_mapping", &InferEngine::Input::slot_mapping)
         .def_readwrite("temperature", &InferEngine::Input::temperature)
         .def_readwrite("top_k", &InferEngine::Input::top_k)
-        .def_readwrite("top_p", &InferEngine::Input::top_p);
+        .def_readwrite("top_p", &InferEngine::Input::top_p)
+        .def_readwrite("random_val", &InferEngine::Input::random_val);
 
     py::class_<InferEngine::Output>(infer_engine, "Output")
-        .def_readwrite("output_ids", &InferEngine::Output::output_ids, "Output tensor");
+        .def_readwrite("output_ids", &InferEngine::Output::output_ids, "Sampled output IDs (when sampling is requested)")
+        .def_readwrite("logits", &InferEngine::Output::logits, "Raw logits (when sampling is NOT requested)");
 }
 
 } // namespace infinilm::engine
