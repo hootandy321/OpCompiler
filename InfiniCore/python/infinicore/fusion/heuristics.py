@@ -39,16 +39,6 @@ class FusionHeuristics:
 
     profile 缺失/异常：打印错误并返回 False
     """
-<<<<<<< HEAD
-    
-    def __init__(self, config: FusionConfig, _path: Optional[str] = None):
-        self.config = config
-        self._supported_ops = None  # 延迟初始化
-        # profile_path 默认为 None，表示不使用 profile 决策（仅用静态规则）
-        self.profile_path = _path
-        self._profile_cache: Optional[Dict[str, Any]] = None  # 缓存profile
-        
-=======
 
     def __init__(self, config: FusionConfig, profile_path: Optional[str] = "./profile.json"):
         self.config = config
@@ -59,7 +49,6 @@ class FusionHeuristics:
         self._profile_cache: Optional[Dict[str, Any]] = None
         self._profile_path_cached: Optional[str] = None
 
->>>>>>> refs/remotes/origin/main
     def _get_ops(self) -> Set[str]:
         """获取支持的算子集合（带缓存）"""
         if self._supported_ops is None:
@@ -83,16 +72,9 @@ class FusionHeuristics:
 
         profile_path = self.profile_path
 
-<<<<<<< HEAD
-        if not os.path.exists(self.profile_path):
-            if self.config.debug_mode:
-                print(f"[Fusion] Profile file not found: {self.profile_path}, using static heuristics only")
-            return {"single": {}, "fused": {}}
-=======
         # cache hit
         if self._profile_cache is not None and self._profile_path_cached == profile_path:
             return self._profile_cache
->>>>>>> refs/remotes/origin/main
 
         if not os.path.exists(profile_path):
             raise FileNotFoundError(f"Profile json not found: {profile_path}")
@@ -205,6 +187,7 @@ class FusionHeuristics:
         特殊规则：
         - profile 缺失/异常：print 错误信息并返回 False
         """
+        return self.config.enable_fusion
         # 规则 0: 总开关检查
         if not self.config.enable_fusion:
             return False
@@ -238,44 +221,11 @@ class FusionHeuristics:
                 if self.config.debug_mode:
                     print(f"[Fusion] Skip: unsupported op '{node.op_type}'")
                 return False
-<<<<<<< HEAD
-        
-        if self.config.debug_mode:
-            print(f"[Fusion] Accept: graph with {len(graph.nodes)} nodes")
-        
-        # --------------------  基于 profile 决策是否融合 --------------------
-        
-        # 如果没有提供 profile_path，跳过 profile 决策，直接返回 True（使用静态规则）
-        if self.profile_path is None:
-            return True
-
-        input_dtypes = getattr(self.config, "input_dtypes", None)
-        if input_dtypes is None:# 临时兜底：全部当 fp16
-            input_dtypes = {name: "fp16" for name in input_shapes}
-
-        profile = self._load_profile()
-        single_t = profile.get("single", {}) or {} # 单个算子独立 kernel 的执行时间
-
-        fused_t = profile.get("fused", {}) or {}
-        
-        # 如果 profile 为空（文件不存在或加载失败），跳过 profile 决策
-        if not single_t and not fused_t:
-            if self.config.debug_mode:
-                print("[Fusion] Profile data empty, using static heuristics only")
-            return True
-
-        supported = self._get_ops()
-        op_types = [n.op_type for n in graph.nodes]
-        if any(op not in supported for op in op_types):
-            if self.config.debug_mode:
-                print("[Fusion] Skip profile check: contains unsupported ops unexpectedly")
-=======
 
         # --- profile 决策（用代表 shape 查表） ---
         shape_key = self._pick_profile_shape_key(graph, input_shapes)
         if shape_key is None:
             print("[Fusion][Error] Cannot pick a representative shape key from input_shapes")
->>>>>>> refs/remotes/origin/main
             return False
 
         op_key = self._fused_op_key(graph)
