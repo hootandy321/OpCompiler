@@ -509,27 +509,24 @@ def main():
     print("\n" + "=" * 80)
     print("📊 PER-PROMPT COMPARISON")
     print("=" * 80)
-    
+
     valid_strategies = [s for s in strategies if "error" not in all_results.get(s, {})]
-    
+
     if len(valid_strategies) >= 2:
         # Header
-        header = f"{'Prompt':<20} {'Predicted':<12}"
+        header = f"{'Prompt':<20}"
         for s in valid_strategies:
             header += f" {s:<12}"
-        header += " Actual      Match"
+        header += " Best"
         print(header)
-        print("-" * (36 + 12 * len(valid_strategies) + 20))
-        
+        print("-" * (32 + 12 * len(valid_strategies)))
+
         prompt_winners = {"never_fuse": 0, "always_fuse": 0, "smart_schedule": 0}
-        prediction_correct = 0
-        prediction_total = 0
-        
+
         for p in TEST_PROMPTS:
             name = p["name"]
-            predicted = p.get("predicted_best", "unknown")
-            
-            row = f"{name:<20} {predicted:<12}"
+
+            row = f"{name:<20}"
             times = {}
             for s in valid_strategies:
                 if name in all_results[s]:
@@ -538,48 +535,26 @@ def main():
                     row += f" {t:<12.1f}"
                 else:
                     row += f" {'N/A':<12}"
-            
+
             if times:
                 best = min(times, key=times.get)
                 prompt_winners[best] = prompt_winners.get(best, 0) + 1
-                
-                # 检查预测是否正确
-                match = "✅" if best == predicted else "❌"
-                if predicted != "unknown":
-                    prediction_total += 1
-                    if best == predicted:
-                        prediction_correct += 1
-                
-                row += f" {best:<12} {match}"
-            
+                row += f" {best:<12}"
+
             print(row)
-        
+
         # Totals
-        print("-" * (36 + 12 * len(valid_strategies) + 20))
-        row = f"{'TOTAL':<20} {'':<12}"
+        print("-" * (32 + 12 * len(valid_strategies)))
+        row = f"{'TOTAL':<20}"
         totals = {}
         for s in valid_strategies:
             total = sum(all_results[s][p["name"]]["avg_time"] for p in TEST_PROMPTS if p["name"] in all_results[s])
             totals[s] = total
             row += f" {total:<12.1f}"
-        
+
         best_total = min(totals, key=totals.get)
         row += f" {best_total:<12} ⭐"
         print(row)
-        
-        # Prediction Accuracy
-        print("\n" + "=" * 80)
-        print("🎯 PREDICTION ACCURACY")
-        print("=" * 80)
-        if prediction_total > 0:
-            accuracy = 100 * prediction_correct / prediction_total
-            print(f"\nCorrect: {prediction_correct}/{prediction_total} ({accuracy:.1f}%)")
-            if accuracy >= 70:
-                print("✅ 理论预测与实际结果基本吻合！")
-            elif accuracy >= 50:
-                print("⚠️ 理论预测部分正确，需要更多 profiling 数据")
-            else:
-                print("❌ 理论预测与实际不符，需要重新分析")
         
         # Strategy Summary
         print("\n" + "=" * 80)

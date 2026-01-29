@@ -247,66 +247,73 @@ void RankWorker::thread_loop() {
                         auto model_args = local_args.to_model_input(rank_info_.device);
                         // Forward calculation
                         auto logits{model_->forward(model_args).logits};
-
-                        // Random sampling (rank 0 only) - only if sampling parameters are provided
-                        bool has_sampling_params = local_args.temperature.has_value() || local_args.top_k.has_value() || local_args.top_p.has_value();
-
+                        // Random sampling (rank 0 only)
                         if (rank_info_.tp_rank == 0) {
-                            Output out;
+                            // Check if sampling parameters are provided
+                            bool has_sampling = local_args.temperature.has_value() ||
+                                                local_args.top_k.has_value() ||
+                                                local_args.top_p.has_value();
 
-                            if (has_sampling_params && logits.has_value()) {
-                                // Get sampling parameters with defaults
-                                float temperature = local_args.temperature.value_or(1.0f);
-                                int top_k = local_args.top_k.value_or(50);
-                                float top_p = local_args.top_p.value_or(1.0f);
-                                float random_val = local_args.random_val.value_or(0.5f);
+                            if (!has_sampling) {
+                                // No sampling parameters: return logits directly
+                                output_ = Output{.output_ids = std::nullopt, .logits = logits};
+                            } else {
+                                // Sampling requested: check if input_offsets is available
+                                if (!local_args.input_offsets.has_value()) {
+                                    // Simple case: single request without input_offsets
+                                    // Use the last token of each sequence in the batch
+                                    auto temperature{local_args.temperature};
+                                    auto top_p{local_args.top_p};
+                                    auto top_k{local_args.top_k};
+                                    auto random_val{local_args.random_val};
 
-                                // Get logits tensor
-                                auto logits_tensor = logits.value();
+                                    const auto &logits_shape{logits->shape()};
+                                    const auto &vocab_size{logits_shape[2]};
+                                    const auto &total_len{logits_shape[1]};
+                                    const auto &batch_size{logits_shape[0]};
 
-                                // Get the last token's logits: logits shape is [batch, seq_len, vocab_size]
-                                // We need to sample from the last position
-                                auto shape = logits_tensor->shape();
-                                size_t batch_size = shape[0];
-                                size_t seq_len = shape[1];
-                                size_t vocab_size = shape[2];
+                                    auto output_ids{infinicore::Tensor::empty({batch_size}, infinicore::DataType::I64, rank_info_.device)};
 
-                                // Create output tensor for sampled ids
-                                auto output_ids = infinicore::Tensor::empty(
-                                    {static_cast<int64_t>(batch_size)},
-                                    infinicore::DataType::I64,
-                                    logits_tensor->device());
-
-                                // Sample for each batch
-                                for (size_t b = 0; b < batch_size; ++b) {
-                                    // Get last position logits for this batch: [vocab_size]
-                                    auto batch_logits = logits_tensor->narrow(0, b, 1)
-                                                            ->narrow(1, seq_len - 1, 1)
-                                                            ->view({static_cast<int64_t>(vocab_size)});
-
-                                    // 确保张量连续，避免 "Bad Tensor Strides" 错误
-                                    if (!batch_logits->is_contiguous()) {
-                                        batch_logits = batch_logits->contiguous();
+                                    for (auto i{decltype(batch_size)(0)}; i < batch_size; ++i) {
+                                        // Get the last token's logits for this sequence
+                                        auto score{logits->view({batch_size * total_len, vocab_size})->narrow({{0, size_t(i * total_len + total_len - 1), 1}})->view({vocab_size})};
+                                        auto out{output_ids->narrow({{0, i, 1}})->view({})};
+                                        infinicore::op::random_sample_(
+                                            out, score, random_val.value_or(0.0f), top_p.value_or(1.0f), top_k.value_or(0), temperature.value_or(1.0f));
                                     }
 
-                                    // Sample using infinicore::op::random_sample
-                                    auto sampled_id = infinicore::op::random_sample(
-                                        batch_logits, random_val, top_p, top_k, temperature);
+                                    output_ids = output_ids->to(infinicore::Device::cpu());
+                                    infinicore::context::syncStream();
+                                    output_ = Output{.output_ids = output_ids, .logits = std::nullopt};
+                                } else {
+                                    // Continuous batching case: use input_offsets
+                                    auto temperature{local_args.temperature};
+                                    auto top_p{local_args.top_p};
+                                    auto top_k{local_args.top_k};
+                                    auto random_val{local_args.random_val};
 
-                                    // Copy sampled id to output tensor
-                                    auto output_slot = output_ids->narrow(0, b, 1)->view({});
-                                    output_slot->copy_from(sampled_id);
+                                    const auto &logits_shape{logits->shape()};
+                                    const auto &vocab_size{logits_shape[2]};
+                                    const auto &total_len{logits_shape[1]};
+                                    const auto &batch_size{logits_shape[0]};
+
+                                    auto n_req = local_args.input_offsets.value()->size(0) - 1;
+                                    int64_t *input_offsets = (int64_t *)local_args.input_offsets.value()->data();
+
+                                    auto output_ids{infinicore::Tensor::empty({n_req}, infinicore::DataType::I64, rank_info_.device)};
+
+                                    for (auto i{decltype(n_req)(0)}; i < n_req; ++i) {
+                                        auto score{logits->view({batch_size * total_len, vocab_size})->narrow({{0, size_t(input_offsets[i + 1] - 1), 1}})->view({vocab_size})};
+                                        auto out{output_ids->narrow({{0, i, 1}})->view({})};
+                                        infinicore::op::random_sample_(
+                                            out, score, random_val.value_or(0.0f), top_p.value_or(1.0f), top_k.value_or(0), temperature.value_or(1.0f));
+                                    }
+
+                                    output_ids = output_ids->to(infinicore::Device::cpu());
+                                    infinicore::context::syncStream();
+                                    output_ = Output{.output_ids = output_ids, .logits = std::nullopt};
                                 }
-
-                                out.output_ids = output_ids;
-                                out.logits = std::nullopt;
-                            } else {
-                                // No sampling requested, return logits
-                                out.logits = logits;
-                                out.output_ids = std::nullopt;
                             }
-
-                            output_ = std::move(out);
                         }
 
                         job_done_ = true;
@@ -314,24 +321,12 @@ void RankWorker::thread_loop() {
                     cv_.notify_all();
 
                 } catch (const std::exception &e) {
-                    std::string error_msg = e.what();
-                    // Don't close worker for random_sample stride errors - these are recoverable
-                    if (error_msg.find("Bad Tensor Strides") != std::string::npos || error_msg.find("infiniopCreateRandomSampleDescriptor") != std::string::npos) {
-                        // For sampling errors, just mark job as done and continue
-                        // This allows Python layer to handle the error gracefully
-                        std::lock_guard<std::mutex> lk(mutex_);
-                        job_done_ = true;
-                        cv_.notify_all();
-                        spdlog::warn("[{}] Recoverable error during forward (sampling skipped): {}\n", info(), e.what());
-                    } else {
-                        // For other errors, close the worker as before
-                        std::lock_guard<std::mutex> lk(mutex_);
-                        should_exit_ = true;
-                        job_done_ = true;
-                        cv_.notify_all();
-                        spdlog::error("[{}] Fatal exception during forward: {}\n", info(), e.what());
-                        break;
-                    }
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    should_exit_ = true;
+                    job_done_ = true;
+                    cv_.notify_all();
+                    spdlog::error("[{}] exception during forward: {}\n", info(), e.what());
+                    break;
                 }
             } else if (local_cmd == Command::RESET_CACHE) {
                 try {
