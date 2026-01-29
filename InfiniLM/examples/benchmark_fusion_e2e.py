@@ -56,77 +56,56 @@ def get_args():
     return parser.parse_args()
 
 
+# 统一 max_tokens，确保 decode 时间一致，以便公平对比 prefill 性能
+DEFAULT_MAX_TOKENS = 30
+
 TEST_PROMPTS = [
     # ========== 极短 Prompt (seq_len < 16) ==========
     {
         "name": "tiny_qa",
-        "prompt": "Hi",  # ~1-2 tokens
-        "max_tokens": 20,
+        "prompt": "Hi",  # ~2 tokens
         "category": "tiny",
         "estimated_prefill_len": 2,
-        "description": "极短输入 (<16 tokens)，两个算子都不应融合",
-        "predicted_swiglu": False,
-        "predicted_add_rms_norm": False,
-        "predicted_best": "never_fuse",
+        "description": "极短输入 (<16 tokens)",
     },
     {
         "name": "short_question",
-        "prompt": "What is 2+2?",  # ~5-6 tokens
-        "max_tokens": 30,
+        "prompt": "What is 2+2?",  # ~6 tokens
         "category": "tiny",
         "estimated_prefill_len": 6,
         "description": "短问题 (<16 tokens)",
-        "predicted_swiglu": False,
-        "predicted_add_rms_norm": False,
-        "predicted_best": "never_fuse",
     },
     
     # ========== 短 Prompt (16 <= seq_len < 64) ==========
     {
         "name": "medium_short",
         "prompt": "Explain the concept of machine learning in simple terms that a beginner can understand.",  # ~20 tokens
-        "max_tokens": 80,
         "category": "short",
         "estimated_prefill_len": 20,
-        "description": "中短输入 (16-64 tokens)，只有 swiglu 融合",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": False,
-        "predicted_best": "smart_schedule",
+        "description": "中短输入 (16-64 tokens)",
     },
     {
         "name": "code_request",
-        "prompt": "Write a Python function to calculate the nth fibonacci number using dynamic programming.",  # ~15-20 tokens
-        "max_tokens": 100,
+        "prompt": "Write a Python function to calculate the nth fibonacci number using dynamic programming.",  # ~18 tokens
         "category": "short",
         "estimated_prefill_len": 18,
         "description": "代码请求 (16-64 tokens)",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": False,
-        "predicted_best": "smart_schedule",
     },
     {
         "name": "multi_sentence",
         "prompt": "I want to learn programming. What programming language should I start with? Please give me some suggestions and explain why.",  # ~25 tokens
-        "max_tokens": 100,
         "category": "short",
         "estimated_prefill_len": 25,
         "description": "多句问题 (16-64 tokens)",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": False,
-        "predicted_best": "smart_schedule",
     },
     
     # ========== 中等 Prompt (64 <= seq_len < 128) ==========
     {
         "name": "long_context",
         "prompt": """Here is a story: Once upon a time, in a small village nestled between rolling hills and a sparkling river, there lived a young girl named Aria. She was known throughout the village for her curiosity and kind heart. Every morning, she would wake before dawn. What should Aria do next?""",  # ~65 tokens
-        "max_tokens": 80,
         "category": "medium",
         "estimated_prefill_len": 70,
-        "description": "中等上下文 (64-128 tokens)，两个算子都融合",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": True,
-        "predicted_best": "always_fuse",
+        "description": "中等上下文 (64-128 tokens)",
     },
     {
         "name": "summarization",
@@ -134,14 +113,10 @@ TEST_PROMPTS = [
 
 Artificial intelligence (AI) is intelligence demonstrated by machines, as opposed to natural intelligence displayed by animals including humans. AI research has been defined as the field of study of intelligent agents, which refers to any system that perceives its environment and takes actions that maximize its chance of achieving its goals.
 
-Summary:""",  # ~70 tokens
-        "max_tokens": 60,
+Summary:""",  # ~75 tokens
         "category": "medium",
         "estimated_prefill_len": 75,
         "description": "摘要任务 (64-128 tokens)",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": True,
-        "predicted_best": "always_fuse",
     },
     
     # ========== 长 Prompt (seq_len >= 128) ==========
@@ -154,13 +129,9 @@ Machine learning is a subset of artificial intelligence (AI) that provides syste
 The process of learning begins with observations or data, such as examples, direct experience, or instruction, in order to look for patterns in data and make better decisions in the future based on the examples that we provide. The primary aim is to allow the computers to learn automatically without human intervention or assistance and adjust actions accordingly.
 
 Machine learning algorithms are often categorized as supervised or unsupervised. What are the key differences between these approaches?""",  # ~150 tokens
-        "max_tokens": 100,
         "category": "long",
         "estimated_prefill_len": 150,
-        "description": "长输入 (128+ tokens)，prefill 主导",
-        "predicted_swiglu": True,
-        "predicted_add_rms_norm": True,
-        "predicted_best": "always_fuse",
+        "description": "长输入 (128+ tokens)",
     },
 ]
 
@@ -172,12 +143,20 @@ def run_inference(
     prompt: str,
     max_new_tokens: int,
     device,
-) -> tuple:
+    disable_eos: bool = True,  # 禁用 EOS 提前终止，强制生成完 max_tokens
+) -> dict:
     """
-    运行一次推理 (使用手动 Python 层 sampling 循环来绕过 C++ random_sample bug)
+    运行一次推理，分开测量 prefill 和 decode 时间
 
     Returns:
-        (output_text, time_ms)
+        {
+            "output_text": str,
+            "prefill_time_ms": float,
+            "decode_time_ms": float,
+            "total_time_ms": float,
+            "prefill_len": int,
+            "decode_steps": int,
+        }
     """
     # Tokenize
     input_content = tokenizer.apply_chat_template(
@@ -185,90 +164,119 @@ def run_inference(
         add_generation_prompt=True,
         tokenize=False,
     )
-    # Fix: use encode() instead of batch_encode_plus() for newer transformers versions
     input_ids_list = [tokenizer.encode(input_content)]
+    prefill_len = len(input_ids_list[0])
 
     # Reset cache
-    model.reset_cache(1, max_new_tokens + len(input_ids_list[0]))
+    model.reset_cache(1, max_new_tokens + prefill_len)
 
     input_ids_infini = infinicore.from_list(input_ids_list, device=device)
+    batch_size, seq_len = input_ids_infini.shape[:2]
 
-    # 静默输出 (通过重定向 stdout)
-    import io
-    import sys
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
+    # 初始化 position_ids 和 cache_lengths
+    position_ids = infinicore.from_list(
+        [list(range(0, seq_len)) for _ in range(batch_size)],
+        dtype=infinicore.int64,
+        device=device,
+    )
+    cache_lengths = infinicore.from_list(
+        [0],
+        dtype=infinicore.int64,
+        device=device,
+    )
 
-    start = time.perf_counter()
-    try:
-        # 手动实现 generation 循环，使用 Python 层 sampling 绕过 C++ random_sample bug
-        batch_size, seq_len = input_ids_infini.shape[:2]
+    output_tokens_list = []
+    eos_token_id = model.config.eos_token_id
+    eos_token_id_list = [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
 
-        # 初始化 position_ids 和 cache_lengths
+    # ====== Prefill 阶段 ======
+    prefill_start = time.perf_counter()
+    
+    logits = model(
+        input_ids=input_ids_infini,
+        position_ids=position_ids,
+        cache_lengths=cache_lengths,
+    )
+    infinicore.sync_device()
+    
+    prefill_end = time.perf_counter()
+    prefill_time_ms = (prefill_end - prefill_start) * 1000.0
+
+    # 获取第一个 token
+    logits_np = logits.to_numpy()
+    next_token_id = int(logits_np.argmax(axis=-1)[0, 0])
+    output_tokens_list.append(next_token_id)
+
+    # 更新 position_ids 和 cache_lengths
+    seq_len = position_ids.shape[-1]
+    position_ids = infinicore.from_list(
+        [1] * batch_size,
+        dtype=infinicore.int64,
+        device=device,
+    ).view((batch_size, 1)) + position_ids.narrow(1, seq_len - 1, 1)
+    cache_lengths = cache_lengths + infinicore.from_list(
+        [seq_len],
+        dtype=infinicore.int64,
+        device=device,
+    )
+
+    # ====== Decode 阶段 ======
+    decode_start = time.perf_counter()
+    decode_steps = 1  # 已经生成了一个 token
+
+    for _ in range(max_new_tokens - 1):
+        # 检查 EOS（除非禁用）
+        if not disable_eos and next_token_id in eos_token_id_list:
+            break
+
+        # 准备下一轮输入
+        input_ids_infini = infinicore.from_list(
+            [[next_token_id] for _ in range(batch_size)],
+            dtype=infinicore.int64,
+            device=device,
+        )
+
+        # 调用 forward
+        logits = model(
+            input_ids=input_ids_infini,
+            position_ids=position_ids,
+            cache_lengths=cache_lengths,
+        )
+        infinicore.sync_device()
+
+        # Greedy decoding
+        logits_np = logits.to_numpy()
+        next_token_id = int(logits_np.argmax(axis=-1)[0, 0])
+        output_tokens_list.append(next_token_id)
+        decode_steps += 1
+
+        # 更新 position_ids 和 cache_lengths
+        seq_len = position_ids.shape[-1]
         position_ids = infinicore.from_list(
-            [list(range(0, seq_len)) for _ in range(batch_size)],
+            [1] * batch_size,
+            dtype=infinicore.int64,
+            device=device,
+        ).view((batch_size, 1)) + position_ids.narrow(1, seq_len - 1, 1)
+        cache_lengths = cache_lengths + infinicore.from_list(
+            [seq_len],
             dtype=infinicore.int64,
             device=device,
         )
-        cache_lengths = infinicore.from_list(
-            [0],
-            dtype=infinicore.int64,
-            device=device,
-        )
 
-        output_tokens_list = []
-        eos_token_id = model.config.eos_token_id
-        eos_token_id_list = [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
+    decode_end = time.perf_counter()
+    decode_time_ms = (decode_end - decode_start) * 1000.0
 
-        for _ in range(max_new_tokens):
-            # 调用 forward 获取 logits (不传递采样参数，避免触发 C++ 采样)
-            logits = model(
-                input_ids=input_ids_infini,
-                position_ids=position_ids,
-                cache_lengths=cache_lengths,
-            )
-            infinicore.sync_device()
+    # 解码输出
+    output_text = tokenizer.decode(output_tokens_list, skip_special_tokens=True)
 
-            # Python 层 greedy decoding (使用 argmax)
-            # Convert logits to numpy and do argmax there (infinicore doesn't have argmax)
-            logits_np = logits.to_numpy()
-            next_token_id = int(logits_np.argmax(axis=-1)[0, 0])
-            token_id = next_token_id
-            output_tokens_list.append(token_id)
-
-            # 检查 EOS
-            if token_id in eos_token_id_list:
-                break
-
-            # 准备下一轮输入
-            seq_len = position_ids.shape[-1]
-            input_ids_infini = infinicore.from_list(
-                [[token_id] for _ in range(batch_size)],
-                dtype=infinicore.int64,
-                device=device,
-            )
-            position_ids = infinicore.from_list(
-                [1] * batch_size,
-                dtype=infinicore.int64,
-                device=device,
-            ).view((batch_size, 1)) + position_ids.narrow(1, seq_len - 1, 1)
-            cache_lengths = cache_lengths + infinicore.from_list(
-                [seq_len],
-                dtype=infinicore.int64,
-                device=device,
-            )
-
-        # 解码输出
-        output_text = tokenizer.decode(output_tokens_list, skip_special_tokens=True)
-        print(output_text, end="", flush=True)
-    finally:
-        output_text = sys.stdout.getvalue()
-        sys.stdout = old_stdout
-    
-    end = time.perf_counter()
-    time_ms = (end - start) * 1000.0
-    
-    return output_text.strip(), time_ms
+    return {
+        "output_text": output_text.strip(),
+        "prefill_time_ms": prefill_time_ms,
+        "decode_time_ms": decode_time_ms,
+        "total_time_ms": prefill_time_ms + decode_time_ms,
+        "prefill_len": prefill_len,
+        "decode_steps": decode_steps,
+    }
 
 
 def load_model_with_strategy(
@@ -373,28 +381,32 @@ def benchmark_strategy(
     print(f"Loading model...")
     model, tokenizer = load_model_with_strategy(model_path, device, tp, strategy)
     
-    times = []
+    prefill_times = []
+    decode_times = []
+    total_times = []
     
     # Warmup
     print(f"Warmup ({warmup} runs)...")
     for i in range(warmup):
-        _, _ = run_inference(model, tokenizer, prompt, max_new_tokens, device)
+        run_inference(model, tokenizer, prompt, max_new_tokens, device)
     
     # Timed runs
     print(f"Benchmark ({runs} runs)...")
     for i in range(runs):
-        output_text, time_ms = run_inference(model, tokenizer, prompt, max_new_tokens, device)
-        times.append(time_ms)
-        print(f"  Run {i+1}: {time_ms:.2f} ms")
+        result = run_inference(model, tokenizer, prompt, max_new_tokens, device)
+        prefill_times.append(result["prefill_time_ms"])
+        decode_times.append(result["decode_time_ms"])
+        total_times.append(result["total_time_ms"])
+        print(f"  Run {i+1}: prefill={result['prefill_time_ms']:.2f}ms, decode={result['decode_time_ms']:.2f}ms, total={result['total_time_ms']:.2f}ms")
     
     # Show sample output
-    print(f"Sample output: {output_text[:100]}...")
+    print(f"Sample output: {result['output_text'][:100]}...")
     
-    avg_time = sum(times) / len(times)
-    min_time = min(times)
-    max_time = max(times)
+    avg_prefill = sum(prefill_times) / len(prefill_times)
+    avg_decode = sum(decode_times) / len(decode_times)
+    avg_total = sum(total_times) / len(total_times)
     
-    print(f"Results: avg={avg_time:.2f}ms, min={min_time:.2f}ms, max={max_time:.2f}ms")
+    print(f"Results: avg_prefill={avg_prefill:.2f}ms, avg_decode={avg_decode:.2f}ms, avg_total={avg_total:.2f}ms")
     
     # 获取融合统计（如果有）
     fusion_stats = None
@@ -404,10 +416,11 @@ def benchmark_strategy(
     
     return {
         "strategy": strategy,
-        "times": times,
-        "avg_time": avg_time,
-        "min_time": min_time,
-        "max_time": max_time,
+        "avg_prefill_ms": avg_prefill,
+        "avg_decode_ms": avg_decode,
+        "avg_total_ms": avg_total,
+        "prefill_len": result["prefill_len"],
+        "decode_steps": result["decode_steps"],
         "fusion_stats": fusion_stats,
     }
 
@@ -418,17 +431,21 @@ def run_all_prompts_with_strategy(
     prompts: list,
     runs: int,
     warmup: int,
-    device,  # 添加 device 参数
+    device,
+    max_tokens: int = DEFAULT_MAX_TOKENS,  # 统一的 max_tokens
 ) -> dict:
-    """对一个策略运行所有 prompts"""
+    """对一个策略运行所有 prompts，分开记录 prefill/decode 时间"""
     results = {}
     
     for p in prompts:
         name = p["name"]
         prompt = p["prompt"]
-        max_tokens = p["max_tokens"]
         
-        times = []
+        prefill_times = []
+        decode_times = []
+        total_times = []
+        prefill_len = 0
+        decode_steps = 0
         
         # Warmup
         for _ in range(warmup):
@@ -436,13 +453,19 @@ def run_all_prompts_with_strategy(
         
         # Timed runs
         for _ in range(runs):
-            _, time_ms = run_inference(model, tokenizer, prompt, max_tokens, device)
-            times.append(time_ms)
+            result = run_inference(model, tokenizer, prompt, max_tokens, device)
+            prefill_times.append(result["prefill_time_ms"])
+            decode_times.append(result["decode_time_ms"])
+            total_times.append(result["total_time_ms"])
+            prefill_len = result["prefill_len"]
+            decode_steps = result["decode_steps"]
         
-        avg_time = sum(times) / len(times)
         results[name] = {
-            "avg_time": avg_time,
-            "times": times,
+            "avg_prefill_ms": sum(prefill_times) / len(prefill_times),
+            "avg_decode_ms": sum(decode_times) / len(decode_times),
+            "avg_total_ms": sum(total_times) / len(total_times),
+            "prefill_len": prefill_len,
+            "decode_steps": decode_steps,
             "category": p["category"],
             "description": p["description"],
         }
@@ -501,13 +524,16 @@ def main():
             all_results[strategy] = results
             
             # 显示该策略的结果
-            print(f"\n{'Prompt':<20} {'Category':<15} {'Avg Time (ms)':<15}")
-            print("-" * 55)
+            print(f"\n{'Prompt':<20} {'Category':<10} {'PrefillLen':<10} {'Prefill(ms)':<12} {'Decode(ms)':<12} {'Total(ms)':<12}")
+            print("-" * 76)
             for name, r in results.items():
-                print(f"{name:<20} {r['category']:<15} {r['avg_time']:<15.2f}")
+                print(f"{name:<20} {r['category']:<10} {r['prefill_len']:<10} {r['avg_prefill_ms']:<12.2f} {r['avg_decode_ms']:<12.2f} {r['avg_total_ms']:<12.2f}")
             
-            total = sum(r["avg_time"] for r in results.values())
-            print(f"{'TOTAL':<20} {'':<15} {total:<15.2f}")
+            total_prefill = sum(r["avg_prefill_ms"] for r in results.values())
+            total_decode = sum(r["avg_decode_ms"] for r in results.values())
+            total = sum(r["avg_total_ms"] for r in results.values())
+            print("-" * 76)
+            print(f"{'TOTAL':<20} {'':<10} {'':<10} {total_prefill:<12.2f} {total_decode:<12.2f} {total:<12.2f}")
             
         except Exception as e:
             print(f"ERROR: {e}")
@@ -540,7 +566,7 @@ def main():
             times = {}
             for s in valid_strategies:
                 if name in all_results[s]:
-                    t = all_results[s][name]["avg_time"]
+                    t = all_results[s][name]["avg_total_ms"]
                     times[s] = t
                     row += f" {t:<12.1f}"
                 else:
@@ -558,7 +584,7 @@ def main():
         row = f"{'TOTAL':<20}"
         totals = {}
         for s in valid_strategies:
-            total = sum(all_results[s][p["name"]]["avg_time"] for p in TEST_PROMPTS if p["name"] in all_results[s])
+            total = sum(all_results[s][p["name"]]["avg_total_ms"] for p in TEST_PROMPTS if p["name"] in all_results[s])
             totals[s] = total
             row += f" {total:<12.1f}"
 
@@ -595,8 +621,8 @@ def main():
             cat_totals = {}
             for s in valid_strategies:
                 total = sum(
-                    all_results[s][p["name"]]["avg_time"] 
-                    for p in cat_prompts 
+                    all_results[s][p["name"]]["avg_total_ms"]
+                    for p in cat_prompts
                     if p["name"] in all_results[s]
                 )
                 cat_totals[s] = total
@@ -614,5 +640,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
