@@ -3,6 +3,7 @@ from transformers import AutoTokenizer
 from infinilm.modeling_utils import load_model_state_dict_by_file
 from infinilm.distributed import DistConfig
 from infinilm.infer_engine import GenerationConfig, InferEngine
+from infinilm.fused_infer_engine import FusedInferEngine
 import argparse
 import sys
 import time
@@ -178,6 +179,11 @@ def get_args():
         action="store_true",
         help="skip loading model weights",
     )
+    parser.add_argument(
+        "--enable-fusion",
+        action="store_true",
+        help="Enable operator fusion optimization",
+    )
     return parser.parse_args()
 
 
@@ -201,16 +207,26 @@ class TestModel:
         infini_device=infinicore.device("cpu", 0),
         tp=1,
         skip_load=False,
+        enable_fusion=False,
     ) -> None:
         model_path = os.path.expanduser(model_path)
         # ---------------------------------------------------------------------------- #
         #                        创建模型,
         # ---------------------------------------------------------------------------- #
-        model = InferEngine(
-            model_path,
-            device=infini_device,
-            distributed_config=DistConfig(tp),
-        )
+        if enable_fusion:
+            print("[Fusion] Operator fusion ENABLED")
+            model = FusedInferEngine(
+                model_path,
+                device=infini_device,
+                distributed_config=DistConfig(tp),
+                enable_fusion=True,
+            )
+        else:
+            model = InferEngine(
+                model_path,
+                device=infini_device,
+                distributed_config=DistConfig(tp),
+            )
 
         # ---------------------------------------------------------------------------- #
         #                        加载权重
@@ -325,6 +341,7 @@ if __name__ == "__main__":
         infini_device=infini_device,
         tp=tp,
         skip_load=skip_load,
+        enable_fusion=args.enable_fusion,
     )
 
     for idx, case in tqdm(cases_dict.items(), desc="Processing cases"):
