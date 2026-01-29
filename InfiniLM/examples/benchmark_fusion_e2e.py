@@ -534,7 +534,15 @@ def main():
             total = sum(r["avg_total_ms"] for r in results.values())
             print("-" * 76)
             print(f"{'TOTAL':<20} {'':<10} {'':<10} {total_prefill:<12.2f} {total_decode:<12.2f} {total:<12.2f}")
-            
+
+            # 释放模型内存
+            print("Releasing model memory...")
+            del model
+            del tokenizer
+            import gc
+            gc.collect()
+            infinicore.sync_device()
+
         except Exception as e:
             print(f"ERROR: {e}")
             import traceback
