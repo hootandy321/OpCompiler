@@ -56,104 +56,114 @@ def get_args():
     return parser.parse_args()
 
 
-# ============================================================
-# 测试 Prompts - 不同长度体现不同场景
-# 
-# predicted_best: 理论预测哪种策略更优
-#   - "never_fuse": 短序列，kernel launch 开销占比大，融合反而增加开销
-#   - "always_fuse": 长序列，memory-bound，融合减少内存访问
-#   - "smart_schedule": 智能选择（应该和 always_fuse 或 never_fuse 接近）
-#
-# 理论依据：
-#   - Prefill 阶段: 处理长序列，大 shape，融合更有利（减少内存带宽）
-#   - Decode 阶段: 每次处理 1 个 token，小 shape，融合开销可能更大
-# ============================================================
 TEST_PROMPTS = [
-    # ========== 短 Prompt (decode 为主) ==========
-    # 理论: 短输入 + 短输出 = 大部分时间在 decode (seq_len=1)
-    # 预测: never_fuse 更好（小 shape 时 kernel launch 开销显著）
+    # ========== 极短 Prompt (seq_len < 16) ==========
     {
-        "name": "short_qa",
-        "prompt": "Hi",
+        "name": "tiny_qa",
+        "prompt": "Hi",  # ~1-2 tokens
         "max_tokens": 20,
-        "category": "decode_heavy",
-        "description": "极短输入，主要测 decode 性能",
+        "category": "tiny",
+        "estimated_prefill_len": 2,
+        "description": "极短输入 (<16 tokens)，两个算子都不应融合",
+        "predicted_swiglu": False,
+        "predicted_add_rms_norm": False,
         "predicted_best": "never_fuse",
-        "reason": "极短序列，decode 占主导，融合开销 > 收益",
     },
     {
-        "name": "simple_question",
-        "prompt": "What is 2+2?",
+        "name": "short_question",
+        "prompt": "What is 2+2?",  # ~5-6 tokens
         "max_tokens": 30,
-        "category": "decode_heavy",
-        "description": "简单问题，短输入短输出",
+        "category": "tiny",
+        "estimated_prefill_len": 6,
+        "description": "短问题 (<16 tokens)",
+        "predicted_swiglu": False,
+        "predicted_add_rms_norm": False,
         "predicted_best": "never_fuse",
-        "reason": "短序列，kernel launch 开销显著",
     },
     
-    # ========== 中等 Prompt ==========
-    # 理论: 中等长度，prefill 和 decode 时间相当
-    # 预测: smart_schedule 或 always_fuse 略好
+    # ========== 短 Prompt (16 <= seq_len < 64) ==========
     {
-        "name": "medium_qa",
-        "prompt": "Explain the concept of machine learning in simple terms.",
-        "max_tokens": 100,
-        "category": "balanced",
-        "description": "中等长度问答",
-        "predicted_best": "always_fuse",
-        "reason": "中等长度，prefill 占比上升，融合开始有收益",
+        "name": "medium_short",
+        "prompt": "Explain the concept of machine learning in simple terms that a beginner can understand.",  # ~20 tokens
+        "max_tokens": 80,
+        "category": "short",
+        "estimated_prefill_len": 20,
+        "description": "中短输入 (16-64 tokens)，只有 swiglu 融合",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": False,
+        "predicted_best": "smart_schedule",
     },
     {
         "name": "code_request",
-        "prompt": "Write a Python function to calculate fibonacci numbers.",
-        "max_tokens": 150,
-        "category": "balanced",
-        "description": "代码生成请求",
-        "predicted_best": "always_fuse",
-        "reason": "较长输出，decode 多但 prefill 也有一定比例",
+        "prompt": "Write a Python function to calculate the nth fibonacci number using dynamic programming.",  # ~15-20 tokens
+        "max_tokens": 100,
+        "category": "short",
+        "estimated_prefill_len": 18,
+        "description": "代码请求 (16-64 tokens)",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": False,
+        "predicted_best": "smart_schedule",
+    },
+    {
+        "name": "multi_sentence",
+        "prompt": "I want to learn programming. What programming language should I start with? Please give me some suggestions and explain why.",  # ~25 tokens
+        "max_tokens": 100,
+        "category": "short",
+        "estimated_prefill_len": 25,
+        "description": "多句问题 (16-64 tokens)",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": False,
+        "predicted_best": "smart_schedule",
     },
     
-    # ========== 长 Prompt (prefill 为主) ==========
-    # 理论: 长输入 = prefill 时间长，处理大 shape，融合收益明显
-    # 预测: always_fuse 明显更好
+    # ========== 中等 Prompt (64 <= seq_len < 128) ==========
     {
         "name": "long_context",
-        "prompt": """Here is a story: Once upon a time, in a small village nestled between rolling hills and a sparkling river, there lived a young girl named Aria. She was known throughout the village for her curiosity and kind heart. Every morning, she would wake before dawn to help her grandmother tend to their small garden of herbs and vegetables.
-
-One day, while exploring the forest beyond the village, Aria discovered a hidden path she had never seen before. The path was lined with glowing mushrooms and led deep into the woods. What should Aria do next?""",
-        "max_tokens": 100,
-        "category": "prefill_heavy",
-        "description": "长上下文，主要测 prefill 性能",
+        "prompt": """Here is a story: Once upon a time, in a small village nestled between rolling hills and a sparkling river, there lived a young girl named Aria. She was known throughout the village for her curiosity and kind heart. Every morning, she would wake before dawn. What should Aria do next?""",  # ~65 tokens
+        "max_tokens": 80,
+        "category": "medium",
+        "estimated_prefill_len": 70,
+        "description": "中等上下文 (64-128 tokens)，两个算子都融合",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": True,
         "predicted_best": "always_fuse",
-        "reason": "长输入 (~120 tokens)，prefill 占比高，融合减少内存访问",
     },
     {
         "name": "summarization",
         "prompt": """Please summarize the following text:
 
-Artificial intelligence (AI) is intelligence demonstrated by machines, as opposed to natural intelligence displayed by animals including humans. AI research has been defined as the field of study of intelligent agents, which refers to any system that perceives its environment and takes actions that maximize its chance of achieving its goals. The term "artificial intelligence" had previously been used to describe machines that mimic and display "human" cognitive skills that are associated with the human mind, such as "learning" and "problem-solving". This definition has since been rejected by major AI researchers who now describe AI in terms of rationality and acting rationally.
+Artificial intelligence (AI) is intelligence demonstrated by machines, as opposed to natural intelligence displayed by animals including humans. AI research has been defined as the field of study of intelligent agents, which refers to any system that perceives its environment and takes actions that maximize its chance of achieving its goals.
 
-Summary:""",
-        "max_tokens": 80,
-        "category": "prefill_heavy",
-        "description": "摘要任务，长输入中等输出",
+Summary:""",  # ~70 tokens
+        "max_tokens": 60,
+        "category": "medium",
+        "estimated_prefill_len": 75,
+        "description": "摘要任务 (64-128 tokens)",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": True,
         "predicted_best": "always_fuse",
-        "reason": "长输入 (~100 tokens)，prefill 主导，融合收益大",
     },
     
-    # ========== 极短请求 ==========
-    # 理论: 极短序列，几乎只有 decode
-    # 预测: never_fuse 更好
+    # ========== 长 Prompt (seq_len >= 128) ==========
     {
-        "name": "batch_short",
-        "prompt": "Hello!",
-        "max_tokens": 10,
-        "category": "decode_heavy",
-        "description": "极短请求，测试 kernel launch 开销",
-        "predicted_best": "never_fuse",
-        "reason": "极短序列，融合额外开销 > 收益",
+        "name": "very_long_context",
+        "prompt": """Here is a detailed technical document about machine learning:
+
+Machine learning is a subset of artificial intelligence (AI) that provides systems the ability to automatically learn and improve from experience without being explicitly programmed. Machine learning focuses on the development of computer programs that can access data and use it to learn for themselves.
+
+The process of learning begins with observations or data, such as examples, direct experience, or instruction, in order to look for patterns in data and make better decisions in the future based on the examples that we provide. The primary aim is to allow the computers to learn automatically without human intervention or assistance and adjust actions accordingly.
+
+Machine learning algorithms are often categorized as supervised or unsupervised. What are the key differences between these approaches?""",  # ~150 tokens
+        "max_tokens": 100,
+        "category": "long",
+        "estimated_prefill_len": 150,
+        "description": "长输入 (128+ tokens)，prefill 主导",
+        "predicted_swiglu": True,
+        "predicted_add_rms_norm": True,
+        "predicted_best": "always_fuse",
     },
 ]
+
 
 
 def run_inference(

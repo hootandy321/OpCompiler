@@ -31,8 +31,21 @@ class FusedInferEngine(GenerationMixin, InferEngine):
     融合决策是 **per-shape** 的，不是全局固定的。
     """
     
-    # 支持的融合模式
+    # 支持动态控制的融合模式
     FUSION_PATTERNS = ["swiglu", "add_rms_norm"]
+    
+    # Per-operator 融合阈值配置
+    # 不同算子可能有不同的最优阈值
+    FUSION_THRESHOLDS = {
+        "swiglu": {
+            "min_seq_len": 16,         # SwiGLU 融合对较短序列也有收益
+            "min_elements": 4096,      # 最小元素数 (batch * seq_len * hidden)
+        },
+        "add_rms_norm": {
+            "min_seq_len": 64,         # Add+RMSNorm 需要较长序列才有收益
+            "min_elements": 8192,      # 较大的元素阈值
+        },
+    }
     
     def __init__(
         self,
@@ -139,13 +152,14 @@ class FusedInferEngine(GenerationMixin, InferEngine):
         
         return decisions
     
-    def _decide_from_profile(self, pattern: str, seq_len: int) -> bool:
+    def _decide_from_profile(self, pattern: str, seq_len: int, batch_size: int = 1, hidden_size: int = 0) -> bool:
         """
         根据 profile 数据决策是否融合。
         
-        简化策略：
-        - 短序列 (seq_len <= 32): 不融合 (kernel launch 开销大)
-        - 长序列 (seq_len > 32): 融合 (memory-bound, 融合收益大)
+        Per-operator 独立决策策略：
+        - 每个算子有独立的 seq_len 和元素数阈值
+        - swiglu: 对较短序列也有收益
+        - add_rms_norm: 需要更长序列才有收益
         
         如果有 profile 数据，则使用数据决策。
         """
@@ -157,8 +171,23 @@ class FusedInferEngine(GenerationMixin, InferEngine):
             # TODO: 更精确的查找逻辑
             pass
         
-        # 默认启发式：长序列融合
-        return seq_len > 32
+        # 获取该算子的阈值配置
+        thresholds = self.FUSION_THRESHOLDS.get(pattern, {"min_seq_len": 32, "min_elements": 4096})
+        min_seq_len = thresholds.get("min_seq_len", 32)
+        min_elements = thresholds.get("min_elements", 4096)
+        
+        # 策略 1: 基于 seq_len 的启发式
+        if seq_len >= min_seq_len:
+            return True
+        
+        # 策略 2: 基于总元素数（如果提供了 hidden_size）
+        if hidden_size > 0:
+            total_elements = batch_size * seq_len * hidden_size
+            if total_elements >= min_elements:
+                return True
+        
+        # 默认：短序列不融合
+        return False
     
     def _set_fusion_context(self, decisions: Dict[str, bool]):
         """设置 C++ FusionContext，传递动态融合决策给 infiniop"""

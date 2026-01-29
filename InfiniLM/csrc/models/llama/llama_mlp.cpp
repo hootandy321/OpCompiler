@@ -36,7 +36,7 @@ infinicore::Tensor LlamaMLP::forward(const infinicore::Tensor &hidden_states) co
 
     infinicore::Tensor intermediate;
     if (use_fused_swiglu) {
-        // Fused SwiGLU: swiglu kernel computes gate * sigmoid(gate) * up
+        // Fused SwiGLU: swiglu kernel computes silu(gate) * up
         intermediate = infinicore::op::swiglu(up, gate);
     } else {
         // Non-fused path: separate silu and mul
