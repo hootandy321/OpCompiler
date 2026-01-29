@@ -234,7 +234,8 @@ class GenerationMixin:
             )
 
             for i in range(0, batch_size):
-                score = token_scores.narrow(0, i, 1).view((vocab_size,))
+                # 确保张量连续，避免 random_sample 的 "Bad Tensor Strides" 错误
+                score = token_scores.narrow(0, i, 1).view((vocab_size,)).contiguous()
                 out = next_tokens.narrow(0, i, 1).view([])
                 infinicore.nn.functional.random_sample(
                     score,

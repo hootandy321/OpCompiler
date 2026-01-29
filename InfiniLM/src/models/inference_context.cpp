@@ -192,12 +192,16 @@ void InferenceContext::swiglu(std::shared_ptr<Tensor> out,
 void InferenceContext::randomSample(std::shared_ptr<Tensor> out,
                                     std::shared_ptr<Tensor> prob,
                                     float random_val, float top_p, uint32_t top_k, float temperature) {
-    size_t key = CacheManager::createDescriptorKey(out, prob);
+    // 确保 prob 张量是连续的，避免 "Bad Tensor Strides" 错误
+    // random_sample 算子要求 prob 张量的 stride(0) == 1
+    auto prob_contiguous = prob->is_contiguous() ? prob : prob->contiguous();
+
+    size_t key = CacheManager::createDescriptorKey(out, prob_contiguous);
 
     infiniopRandomSampleDescriptor_t desc;
     if (!cache_manager->getRandomSampleDescriptor(key, desc)) {
         RUN_INFINI(infiniopCreateRandomSampleDescriptor(
-            op_handle, &desc, out->desc(), prob->desc()));
+            op_handle, &desc, out->desc(), prob_contiguous->desc()));
         cache_manager->putRandomSampleDescriptor(key, desc);
     }
 
@@ -208,7 +212,7 @@ void InferenceContext::randomSample(std::shared_ptr<Tensor> out,
 
     RUN_INFINI(infiniopRandomSample(
         desc, workspace, workspace_size,
-        out->data(), prob->data(),
+        out->data(), prob_contiguous->data(),
         random_val, top_p, top_k, temperature,
         stream));
 }

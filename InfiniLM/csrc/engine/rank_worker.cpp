@@ -248,20 +248,64 @@ void RankWorker::thread_loop() {
                         // Forward calculation
                         auto logits{model_->forward(model_args).logits};
 
-                        // Random sampling (rank 0 only) - only if input_offsets is provided
-                        // input_offsets being provided indicates that sampling is requested
-                        if (rank_info_.tp_rank == 0 && local_args.input_offsets.has_value()) {
-                            // TODO: Implement sampling properly when input_offsets is provided
-                            // For now, skip sampling to avoid the "Bad Tensor Strides" bug
-                            spdlog::warn("[{}] Sampling requested but temporarily disabled\n", info());
-                        }
+                        // Random sampling (rank 0 only) - only if sampling parameters are provided
+                        bool has_sampling_params = local_args.temperature.has_value() || local_args.top_k.has_value() || local_args.top_p.has_value();
 
-                        // Set output - return logits when sampling is not requested
-                        // This allows the Python layer to do sampling, bypassing C++ random_sample bug
                         if (rank_info_.tp_rank == 0) {
                             Output out;
-                            out.logits = logits;
-                            out.output_ids = std::nullopt;
+
+                            if (has_sampling_params && logits.has_value()) {
+                                // Get sampling parameters with defaults
+                                float temperature = local_args.temperature.value_or(1.0f);
+                                int top_k = local_args.top_k.value_or(50);
+                                float top_p = local_args.top_p.value_or(1.0f);
+                                float random_val = local_args.random_val.value_or(0.5f);
+
+                                // Get logits tensor
+                                auto logits_tensor = logits.value();
+
+                                // Get the last token's logits: logits shape is [batch, seq_len, vocab_size]
+                                // We need to sample from the last position
+                                auto shape = logits_tensor->shape();
+                                size_t batch_size = shape[0];
+                                size_t seq_len = shape[1];
+                                size_t vocab_size = shape[2];
+
+                                // Create output tensor for sampled ids
+                                auto output_ids = infinicore::Tensor::empty(
+                                    {static_cast<int64_t>(batch_size)},
+                                    infinicore::DataType::I64,
+                                    logits_tensor->device());
+
+                                // Sample for each batch
+                                for (size_t b = 0; b < batch_size; ++b) {
+                                    // Get last position logits for this batch: [vocab_size]
+                                    auto batch_logits = logits_tensor->narrow(0, b, 1)
+                                                            ->narrow(1, seq_len - 1, 1)
+                                                            ->view({static_cast<int64_t>(vocab_size)});
+
+                                    // 确保张量连续，避免 "Bad Tensor Strides" 错误
+                                    if (!batch_logits->is_contiguous()) {
+                                        batch_logits = batch_logits->contiguous();
+                                    }
+
+                                    // Sample using infinicore::op::random_sample
+                                    auto sampled_id = infinicore::op::random_sample(
+                                        batch_logits, random_val, top_p, top_k, temperature);
+
+                                    // Copy sampled id to output tensor
+                                    auto output_slot = output_ids->narrow(0, b, 1)->view({});
+                                    output_slot->copy_from(sampled_id);
+                                }
+
+                                out.output_ids = output_ids;
+                                out.logits = std::nullopt;
+                            } else {
+                                // No sampling requested, return logits
+                                out.logits = logits;
+                                out.output_ids = std::nullopt;
+                            }
+
                             output_ = std::move(out);
                         }
 
@@ -272,8 +316,7 @@ void RankWorker::thread_loop() {
                 } catch (const std::exception &e) {
                     std::string error_msg = e.what();
                     // Don't close worker for random_sample stride errors - these are recoverable
-                    if (error_msg.find("Bad Tensor Strides") != std::string::npos ||
-                        error_msg.find("infiniopCreateRandomSampleDescriptor") != std::string::npos) {
+                    if (error_msg.find("Bad Tensor Strides") != std::string::npos || error_msg.find("infiniopCreateRandomSampleDescriptor") != std::string::npos) {
                         // For sampling errors, just mark job as done and continue
                         // This allows Python layer to handle the error gracefully
                         std::lock_guard<std::mutex> lk(mutex_);
@@ -324,4 +367,4 @@ void RankWorker::thread_loop() {
     }
 }
 
-} // amespace infinilm::engine
+} // namespace infinilm::engine
