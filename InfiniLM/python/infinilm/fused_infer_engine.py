@@ -221,9 +221,30 @@ class FusedInferEngine(GenerationMixin, InferEngine):
                 top_p=top_p,
             )
         
-        # 获取 shape key 和序列长度
-        shape_key = self._get_shape_key(input_ids, position_ids)
+        # 获取序列长度
         seq_len = input_ids.shape[1] if hasattr(input_ids, 'shape') and len(input_ids.shape) > 1 else 1
+        
+        # 【优化】profile 模式下，短序列直接跳过融合逻辑，避免额外开销
+        # 这对 decode 阶段 (seq_len=1) 尤为重要，可以避免：
+        # - shape_key 计算
+        # - 决策缓存查找
+        # - FusionContext Python-C++ 调用开销
+        if self._fusion_mode == "profile" and seq_len <= 32:
+            return super().forward(
+                input_ids,
+                position_ids=position_ids,
+                cache_lengths=cache_lengths,
+                input_lengths=input_lengths,
+                input_offsets=input_offsets,
+                block_tables=block_tables,
+                slot_mapping=slot_mapping,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+        
+        # 获取 shape key（仅长序列需要）
+        shape_key = self._get_shape_key(input_ids, position_ids)
         
         # 获取融合决策
         decisions = self._get_fusion_decisions(shape_key, seq_len)
