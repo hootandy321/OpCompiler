@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, List
 import hashlib
 import json
 import os
+import time
 
 from infinilm.infer_engine import InferEngine
 from infinilm.generation.utils import GenerationMixin
@@ -94,6 +95,14 @@ class FusedInferEngine(GenerationMixin, InferEngine):
         self._stats = {
             "forward_calls": 0,
             "fusion_decisions": 0,
+        }
+        
+        # 【新增】累计时间统计 (用于分离规划时间和计算时间)
+        self._timing_stats = {
+            "total_planning_time_ms": 0.0,   # 累计规划时间 (决策 + FusionContext)
+            "total_compute_time_ms": 0.0,    # 累计纯计算时间 (父类 forward)
+            "planning_calls": 0,              # 执行规划的次数
+            "bypass_calls": 0,                # 跳过规划的次数 (短序列优化)
         }
     
     def _get_shape_key(self, input_ids, position_ids) -> str:
@@ -259,7 +268,11 @@ class FusedInferEngine(GenerationMixin, InferEngine):
         # - 决策缓存查找
         # - FusionContext Python-C++ 调用开销
         if self._fusion_mode == "profile" and seq_len <= 32:
-            return super().forward(
+            self._timing_stats["bypass_calls"] += 1
+            
+            # 【计时】纯计算时间
+            compute_start = time.perf_counter()
+            result = super().forward(
                 input_ids,
                 position_ids=position_ids,
                 cache_lengths=cache_lengths,
@@ -271,6 +284,12 @@ class FusedInferEngine(GenerationMixin, InferEngine):
                 top_k=top_k,
                 top_p=top_p,
             )
+            compute_end = time.perf_counter()
+            self._timing_stats["total_compute_time_ms"] += (compute_end - compute_start) * 1000.0
+            return result
+        
+        # 【计时】规划阶段开始
+        planning_start = time.perf_counter()
         
         # 获取 shape key（仅长序列需要）
         shape_key = self._get_shape_key(input_ids, position_ids)
@@ -281,7 +300,15 @@ class FusedInferEngine(GenerationMixin, InferEngine):
         # 设置 C++ FusionContext
         self._set_fusion_context(decisions)
         
+        # 【计时】规划阶段结束
+        planning_end = time.perf_counter()
+        self._timing_stats["total_planning_time_ms"] += (planning_end - planning_start) * 1000.0
+        self._timing_stats["planning_calls"] += 1
+        
         try:
+            # 【计时】计算阶段开始
+            compute_start = time.perf_counter()
+            
             # 调用父类 forward (C++ 后端会读取 FusionContext 来决定用融合算子)
             result = super().forward(
                 input_ids,
@@ -295,6 +322,11 @@ class FusedInferEngine(GenerationMixin, InferEngine):
                 top_k=top_k,
                 top_p=top_p,
             )
+            
+            # 【计时】计算阶段结束
+            compute_end = time.perf_counter()
+            self._timing_stats["total_compute_time_ms"] += (compute_end - compute_start) * 1000.0
+            
             return result
         except RuntimeError as e:
             # [Workaround] Bypass C++ random_sample stride bug on ILUVATAR
@@ -361,12 +393,36 @@ class FusedInferEngine(GenerationMixin, InferEngine):
         self._fusion_decision_cache.clear()
         self._stats = {"forward_calls": 0, "fusion_decisions": 0}
     
+    def reset_timing_stats(self):
+        """重置计时统计（每次 benchmark 前调用）"""
+        self._timing_stats = {
+            "total_planning_time_ms": 0.0,
+            "total_compute_time_ms": 0.0,
+            "planning_calls": 0,
+            "bypass_calls": 0,
+        }
+    
+    def get_timing_stats(self) -> Dict[str, Any]:
+        """
+        获取计时统计。
+        
+        Returns:
+            {
+                "total_planning_time_ms": 累计规划时间,
+                "total_compute_time_ms": 累计纯计算时间,
+                "planning_calls": 执行规划的次数,
+                "bypass_calls": 跳过规划的次数,
+            }
+        """
+        return self._timing_stats.copy()
+    
     def get_stats(self) -> Dict[str, Any]:
         return {
             "enabled": self._enable_fusion,
             "mode": self._fusion_mode,
             "decision_cache_size": len(self._fusion_decision_cache),
             **self._stats,
+            **self._timing_stats,  # 包含计时统计
         }
     
     def __repr__(self) -> str:
