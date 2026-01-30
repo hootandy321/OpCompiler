@@ -62,3 +62,5 @@ data/
 
 # Sync conflict files (Syncthing, cloud IDE sync)
 *.sync-conflict-*
+CPM-9G-8B/
+TinyLlama-1.1B-Chat-v1.0/
