@@ -545,13 +545,13 @@ def main():
             print("-" * 76)
             for name, r in results.items():
                 print(f"{name:<20} {r['category']:<10} {r['prefill_len']:<10} {r['avg_prefill_ms']:<12.2f} {r['avg_decode_ms']:<12.2f} {r['avg_total_ms']:<12.2f}")
-            
+
             total_prefill = sum(r["avg_prefill_ms"] for r in results.values())
             total_decode = sum(r["avg_decode_ms"] for r in results.values())
             total = sum(r["avg_total_ms"] for r in results.values())
             print("-" * 76)
             print(f"{'TOTAL':<20} {'':<10} {'':<10} {total_prefill:<12.2f} {total_decode:<12.2f} {total:<12.2f}")
-            
+
             # 【新增】显示 smart_schedule 的计时统计
             if timing_stats and strategy == "smart_schedule":
                 print(f"\n📊 Smart Schedule 计时统计:")
@@ -566,7 +566,7 @@ def main():
                     planning_pct = timing_stats['total_planning_time_ms'] / total_time * 100
                     print(f"   规划时间占比:           {planning_pct:.1f}%")
                     print(f"   纯计算时间占比:         {compute_pct:.1f}%")
-            
+
             # 释放模型内存
             print("Releasing model memory...")
             del model
@@ -574,7 +574,7 @@ def main():
             import gc
             gc.collect()
             infinicore.sync_device()
-            
+
         except Exception as e:
             print(f"ERROR: {e}")
             import traceback
@@ -607,7 +607,7 @@ def main():
             for s in valid_strategies:
                 prompts_data = all_results[s].get("prompts", {})
                 if name in prompts_data:
-                    t = prompts_data[name]["avg_total_ms"]  # 使用 avg_total_ms 而不是 avg_time
+                    t = prompts_data[name]["avg_total_ms"]
                     times[s] = t
                     row += f" {t:<12.1f}"
                 else:
@@ -681,8 +681,8 @@ def main():
             for s in valid_strategies:
                 prompts_data = all_results[s].get("prompts", {})
                 total = sum(
-                    prompts_data[p["name"]]["avg_total_ms"] 
-                    for p in cat_prompts 
+                    prompts_data[p["name"]]["avg_total_ms"]
+                    for p in cat_prompts
                     if p["name"] in prompts_data
                 )
                 cat_totals[s] = total
@@ -700,5 +700,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

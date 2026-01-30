@@ -19,7 +19,9 @@
       "Bash(nvidia-smi:*)",
       "Bash(xmake build:*)",
       "Bash(xmake install:*)",
-      "Bash(xmake clean:*)"
+      "Bash(xmake clean:*)",
+      "Bash(git push:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

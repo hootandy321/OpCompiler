@@ -277,7 +277,19 @@ void RankWorker::thread_loop() {
                                     for (auto i{decltype(batch_size)(0)}; i < batch_size; ++i) {
                                         // Get the last token's logits for this sequence
                                         auto score{logits->view({batch_size * total_len, vocab_size})->narrow({{0, size_t(i * total_len + total_len - 1), 1}})->view({vocab_size})};
+
+                                        // Ensure the tensor is contiguous before passing to random_sample_
+                                        if (!score->is_contiguous()) {
+                                            score = score->contiguous();
+                                        }
+
                                         auto out{output_ids->narrow({{0, i, 1}})->view({})};
+
+                                        // Ensure the output tensor is also contiguous
+                                        if (!out->is_contiguous()) {
+                                            out = out->contiguous();
+                                        }
+
                                         infinicore::op::random_sample_(
                                             out, score, random_val.value_or(0.0f), top_p.value_or(1.0f), top_k.value_or(0), temperature.value_or(1.0f));
                                     }
@@ -304,7 +316,19 @@ void RankWorker::thread_loop() {
 
                                     for (auto i{decltype(n_req)(0)}; i < n_req; ++i) {
                                         auto score{logits->view({batch_size * total_len, vocab_size})->narrow({{0, size_t(input_offsets[i + 1] - 1), 1}})->view({vocab_size})};
+
+                                        // Ensure the tensor is contiguous before passing to random_sample_
+                                        if (!score->is_contiguous()) {
+                                            score = score->contiguous();
+                                        }
+
                                         auto out{output_ids->narrow({{0, i, 1}})->view({})};
+
+                                        // Ensure the output tensor is also contiguous
+                                        if (!out->is_contiguous()) {
+                                            out = out->contiguous();
+                                        }
+
                                         infinicore::op::random_sample_(
                                             out, score, random_val.value_or(0.0f), top_p.value_or(1.0f), top_k.value_or(0), temperature.value_or(1.0f));
                                     }
