@@ -21,7 +21,12 @@
       "Bash(xmake install:*)",
       "Bash(xmake clean:*)",
       "Bash(git push:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git fetch:*)",
+      "Bash(git restore:*)",
+      "Bash(git push)",
+      "Bash(chmod:*)",
+      "Bash(git stash:*)"
     ],
     "deny": [],
     "ask": []
